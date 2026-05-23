@@ -1,0 +1,19 @@
+# Local development image — hot-reload via uvicorn, NOT the Lambda runtime.
+# Production deploys as Lambda (Dockerfile). This is dev-only.
+#
+# Usage: ./dev.sh start   (do not run docker compose directly)
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install all deps EXCEPT ajna-cloud (installed at runtime from bind-mounted SDK clone)
+COPY requirements.txt .
+RUN grep -v "^ajna-cloud" requirements.txt > /tmp/requirements-no-sdk.txt && \
+    pip install --no-cache-dir -r /tmp/requirements-no-sdk.txt
+
+# Entrypoint installs SDK from bind-mount and starts uvicorn with hot-reload
+COPY entrypoint.local.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# src/ is bind-mounted at runtime — not copied, so edits don't require rebuilds
+ENTRYPOINT ["/entrypoint.sh"]

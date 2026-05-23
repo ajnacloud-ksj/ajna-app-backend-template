@@ -1,0 +1,8 @@
+ajna-cloud>=0.4.66
+boto3>=1.28.0
+requests>=2.28.0
+python-jose[cryptography]>=3.3.0
+python-dotenv>=1.0.0
+openpyxl>=3.0
+fastapi>=0.100.0
+uvicorn>=0.23.0

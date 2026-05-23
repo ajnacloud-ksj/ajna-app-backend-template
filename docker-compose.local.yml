@@ -1,0 +1,69 @@
+# Local development stack — hot-reload for backend and UI.
+# NOT for production. Production: backend → Lambda, UI → CloudFront.
+#
+# Ports and AJNA_SDK_PATH are injected by dev.sh (auto-detected / resolved).
+# Do not run this file with `docker compose` directly — use ./dev.sh instead.
+#
+# Assumes {{app-name}}-ui is cloned as a sibling of this repo:
+#   parent/
+#   ├── {{app-name}}-backend/   ← this repo (run dev.sh from here)
+#   └── {{app-name}}-ui/        ← clone: git clone git@github.com:{{github-org}}/{{app-name}}-ui.git ../{{app-name}}-ui
+
+services:
+  # ── Backend (Python Lambda → local FastAPI wrapper) ─────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    ports:
+      - "${PORT_BACKEND:-8000}:8000"
+    env_file:
+      - .env
+    environment:
+      ENVIRONMENT: development
+    volumes:
+      # Hot-reload: src changes reflected immediately (no rebuild needed)
+      - ./src:/app/src:ro
+      # local_dev.py is the FastAPI shim wrapping the Lambda handler
+      - ./local_dev.py:/app/local_dev.py:ro
+      # ajna-cloud-sdk: editable install from local clone
+      # rw needed so pip can write ajna_cloud.egg-info for editable install
+      # AJNA_SDK_PATH is always set by dev.sh — never run this file directly
+      - ${AJNA_SDK_PATH}:/ajna-cloud-sdk:rw
+      # AWS credentials (only needed when AUTH_MODE=cognito)
+      - ~/.aws:/root/.aws:ro
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+
+  # ── UI (Vite + React) — requires {{app-name}}-ui cloned as a sibling ─────────
+  ui:
+    image: node:20-alpine
+    working_dir: /app
+    ports:
+      - "${PORT_UI:-5173}:5173"
+    environment:
+      NODE_ENV: development
+      VITE_API_URL: "http://localhost:${PORT_BACKEND:-8000}/v1"
+    volumes:
+      - ../{{app-name}}-ui:/app
+      # Isolated node_modules avoids host/container platform conflicts
+      - ui_node_modules:/app/node_modules
+    command: sh -c "npm install --silent && npm run dev -- --host 0.0.0.0 --port 5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  ui_node_modules:

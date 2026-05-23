@@ -1,0 +1,18 @@
+{
+    "fields": {
+        "id": {"type": "string", "required": true},
+        "tenant_id": {"type": "string", "required": true},
+        "entity_type": {"type": "string", "required": true},
+        "field_key": {"type": "string", "required": true},
+        "label": {"type": "string", "required": true},
+        "field_type": {"type": "string", "required": true},
+        "required": {"type": "boolean", "required": false},
+        "hidden": {"type": "boolean", "required": false},
+        "sort_order": {"type": "integer", "required": false},
+        "section": {"type": "string", "required": false},
+        "helper_text": {"type": "string", "required": false},
+        "options": {"type": "string", "required": false},
+        "created_at": {"type": "string", "required": true},
+        "updated_at": {"type": "string", "required": false}
+    }
+}

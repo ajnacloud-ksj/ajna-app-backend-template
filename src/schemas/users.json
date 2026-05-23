@@ -1,0 +1,14 @@
+{
+    "fields": {
+        "id": {"type": "string", "required": true},
+        "username": {"type": "string", "required": true},
+        "email": {"type": "string", "required": true},
+        "role": {"type": "string", "required": true},
+        "tenant_id": {"type": "string", "required": true},
+        "status": {"type": "string", "required": false},
+        "enabled": {"type": "string", "required": false},
+        "cognito_sub": {"type": "string", "required": false},
+        "created_at": {"type": "string", "required": true},
+        "updated_at": {"type": "string", "required": false}
+    }
+}
