@@ -27,6 +27,8 @@ jobs:
       lambda-role-arn: ${{ vars.LAMBDA_ROLE_ARN }}
       codeartifact-account: ${{ vars.CODEARTIFACT_ACCOUNT }}
       codeartifact-region: ${{ vars.CODEARTIFACT_REGION }}
+      memory-size: ${{ vars.LAMBDA_MEMORY_SIZE && fromJSON(vars.LAMBDA_MEMORY_SIZE) || 512 }}
+      timeout: ${{ vars.LAMBDA_TIMEOUT && fromJSON(vars.LAMBDA_TIMEOUT) || 300 }}
       environment-variables: >-
         ENVIRONMENT=${{ vars.APP_ENVIRONMENT }},
         IBEX_API_URL=https://smartlink.ajna.cloud/ibexdb,
