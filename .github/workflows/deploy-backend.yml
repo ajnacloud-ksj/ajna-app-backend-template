@@ -22,7 +22,7 @@ jobs:
     uses: ajnacloud-ksj/ajna-github-workflows/.github/workflows/reusable-lambda-v2.yml@main
     with:
       aws-region: ${{ vars.AWS_REGION }}
-      ecr-repository: {{app-name}}-backend
+      ecr-repository: ${{ vars.ECR_REPOSITORY }}
       lambda-function-name: ${{ vars.LAMBDA_FUNCTION_NAME }}
       lambda-role-arn: ${{ vars.LAMBDA_ROLE_ARN }}
       codeartifact-account: ${{ vars.CODEARTIFACT_ACCOUNT }}
@@ -31,8 +31,8 @@ jobs:
       timeout: ${{ vars.LAMBDA_TIMEOUT && fromJSON(vars.LAMBDA_TIMEOUT) || 300 }}
       environment-variables: >-
         ENVIRONMENT=${{ vars.APP_ENVIRONMENT }},
-        IBEX_API_URL=https://smartlink.ajna.cloud/ibexdb,
-        TENANT_ID={{tenant-id}},
+        IBEX_API_URL=${{ vars.IBEX_API_URL }},
+        TENANT_ID=${{ vars.TENANT_ID }},
         DB_NAMESPACE=default,
         LOG_LEVEL=INFO,
         MASK_SENSITIVE_DATA=true,
@@ -40,7 +40,7 @@ jobs:
         COGNITO_REGION=${{ vars.AWS_REGION }},
         COGNITO_USER_POOL_ID=${{ vars.COGNITO_USER_POOL_ID }},
         COGNITO_CLIENT_ID=${{ vars.COGNITO_CLIENT_ID }},
-        APP_PREFIX={{app-name}},
+        APP_PREFIX=${{ vars.APP_NAME }},
         FEATURE_ITEMS_CRUD=true,
         IBEX_AUDIT_ENABLED=true,
         IBEX_RBAC_ENABLED=true,
