@@ -17,33 +17,60 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
+  # A job that `uses:` a reusable workflow CANNOT also set `environment:` — GitHub rejects the
+  # workflow at parse time ("Unexpected value 'uses'"). So a normal `config` job carries the
+  # environment (which is what scopes `vars.*` to dev/prod) and exposes the resolved values as
+  # outputs; the `deploy` caller job then reads needs.config.outputs.* with no `environment:`.
+  config:
+    runs-on: ubuntu-latest
     environment: ${{ (inputs.environment != '' && inputs.environment) || (github.ref_name == 'main' && 'prod' || 'dev') }}
-    uses: ajnacloud-ksj/ajna-github-workflows/.github/workflows/reusable-lambda-v2.yml@main
-    with:
+    outputs:
       aws-region: ${{ vars.AWS_REGION }}
       ecr-repository: ${{ vars.ECR_REPOSITORY }}
       lambda-function-name: ${{ vars.LAMBDA_FUNCTION_NAME }}
       lambda-role-arn: ${{ vars.LAMBDA_ROLE_ARN }}
       codeartifact-account: ${{ vars.CODEARTIFACT_ACCOUNT }}
       codeartifact-region: ${{ vars.CODEARTIFACT_REGION }}
-      memory-size: ${{ vars.LAMBDA_MEMORY_SIZE && fromJSON(vars.LAMBDA_MEMORY_SIZE) || 512 }}
-      timeout: ${{ vars.LAMBDA_TIMEOUT && fromJSON(vars.LAMBDA_TIMEOUT) || 300 }}
+      memory-size: ${{ vars.LAMBDA_MEMORY_SIZE }}
+      timeout: ${{ vars.LAMBDA_TIMEOUT }}
+      app-environment: ${{ vars.APP_ENVIRONMENT }}
+      ibex-api-url: ${{ vars.IBEX_API_URL }}
+      tenant-id: ${{ vars.TENANT_ID }}
+      cognito-user-pool-id: ${{ vars.COGNITO_USER_POOL_ID }}
+      cognito-client-id: ${{ vars.COGNITO_CLIENT_ID }}
+      cockpit-api-url: ${{ vars.COCKPIT_API_URL }}
+      app-name: ${{ vars.APP_NAME }}
+      s3-path: ${{ vars.S3_PATH }}
+    steps:
+      - run: echo "Resolved ${{ vars.APP_NAME }} environment variables"
+
+  deploy:
+    needs: config
+    uses: ajnacloud-ksj/ajna-github-workflows/.github/workflows/reusable-lambda-v2.yml@main
+    with:
+      aws-region: ${{ needs.config.outputs.aws-region }}
+      ecr-repository: ${{ needs.config.outputs.ecr-repository }}
+      lambda-function-name: ${{ needs.config.outputs.lambda-function-name }}
+      lambda-role-arn: ${{ needs.config.outputs.lambda-role-arn }}
+      codeartifact-account: ${{ needs.config.outputs.codeartifact-account }}
+      codeartifact-region: ${{ needs.config.outputs.codeartifact-region }}
+      memory-size: ${{ needs.config.outputs.memory-size && fromJSON(needs.config.outputs.memory-size) || 512 }}
+      timeout: ${{ needs.config.outputs.timeout && fromJSON(needs.config.outputs.timeout) || 300 }}
       environment-variables: >-
-        ENVIRONMENT=${{ vars.APP_ENVIRONMENT }},
-        IBEX_API_URL=${{ vars.IBEX_API_URL }},
-        TENANT_ID=${{ vars.TENANT_ID }},
+        ENVIRONMENT=${{ needs.config.outputs.app-environment }},
+        IBEX_API_URL=${{ needs.config.outputs.ibex-api-url }},
+        TENANT_ID=${{ needs.config.outputs.tenant-id }},
         DB_NAMESPACE=default,
         LOG_LEVEL=INFO,
         MASK_SENSITIVE_DATA=true,
         AUTH_MODE=cognito,
-        COGNITO_REGION=${{ vars.AWS_REGION }},
-        COGNITO_USER_POOL_ID=${{ vars.COGNITO_USER_POOL_ID }},
-        COGNITO_CLIENT_ID=${{ vars.COGNITO_CLIENT_ID }},
-        APP_PREFIX=${{ vars.APP_NAME }},
+        COGNITO_REGION=${{ needs.config.outputs.aws-region }},
+        COGNITO_USER_POOL_ID=${{ needs.config.outputs.cognito-user-pool-id }},
+        COGNITO_CLIENT_ID=${{ needs.config.outputs.cognito-client-id }},
+        APP_PREFIX=${{ needs.config.outputs.app-name }},
         FEATURE_ITEMS_CRUD=true,
         IBEX_AUDIT_ENABLED=true,
         IBEX_RBAC_ENABLED=true,
-        COCKPIT_API_URL=${{ vars.COCKPIT_API_URL }},
-        CORS_ALLOWED_ORIGINS=https://${{ vars.S3_PATH }}
+        COCKPIT_API_URL=${{ needs.config.outputs.cockpit-api-url }},
+        CORS_ALLOWED_ORIGINS=https://${{ needs.config.outputs.s3-path }}
     secrets: inherit
