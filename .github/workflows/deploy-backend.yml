@@ -51,6 +51,9 @@ jobs:
       ecr-repository: ${{ needs.config.outputs.ecr-repository }}
       lambda-function-name: ${{ needs.config.outputs.lambda-function-name }}
       lambda-role-arn: ${{ needs.config.outputs.lambda-role-arn }}
+      # The Dockerfile COPYs ajna_cloud-*.whl, which the reusable workflow only fetches from
+      # CodeArtifact when sdk-version is set — without it the build fails ("invalid wheel filename").
+      sdk-version: ${{ vars.SDK_VERSION || '1.0.24' }}
       codeartifact-account: ${{ needs.config.outputs.codeartifact-account }}
       codeartifact-region: ${{ needs.config.outputs.codeartifact-region }}
       # NB: fromJSON() must wrap a `vars.*` value (resolvable at startup), NOT a `needs.*.outputs.*`
