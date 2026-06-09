@@ -20,6 +20,7 @@ jobs:
     environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     outputs:
       aws-region: ${{ vars.AWS_REGION }}
+      aws-role-arn: ${{ vars.AWS_ROLE_ARN }}
       ecr-repository: ${{ vars.ECR_REPOSITORY }}
       lambda-function-name: ${{ vars.LAMBDA_FUNCTION_NAME }}
       lambda-role-arn: ${{ vars.LAMBDA_ROLE_ARN }}
@@ -46,6 +47,7 @@ jobs:
     uses: ajnacloud-ksj/ajna-github-workflows/.github/workflows/reusable-lambda-v2.yml@main
     with:
       aws-region: ${{ needs.config.outputs.aws-region }}
+      role-to-assume: ${{ needs.config.outputs.aws-role-arn }}
       ecr-repository: ${{ needs.config.outputs.ecr-repository }}
       lambda-function-name: ${{ needs.config.outputs.lambda-function-name }}
       lambda-role-arn: ${{ needs.config.outputs.lambda-role-arn }}
