@@ -4,26 +4,20 @@ on:
   push:
     branches: [main, develop]
   workflow_dispatch:
-    inputs:
-      environment:
-        description: 'Target environment'
-        required: false
-        default: ''
-        type: choice
-        options: ['', 'dev', 'prod']
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  # A job that `uses:` a reusable workflow CANNOT also set `environment:` — GitHub rejects the
-  # workflow at parse time ("Unexpected value 'uses'"). So a normal `config` job carries the
-  # environment (which is what scopes `vars.*` to dev/prod) and exposes the resolved values as
-  # outputs; the `deploy` caller job then reads needs.config.outputs.* with no `environment:`.
+  # A job that `uses:` a reusable workflow CANNOT set `environment:` — so a normal `config` job holds
+  # the environment (which scopes `vars.*` to dev/prod) and re-exports them as outputs; `deploy` reads
+  # needs.config.outputs.*. The environment is derived from the branch ONLY (main→prod, else dev) — do
+  # NOT reference `inputs.*` here, that's null on push events and makes GitHub reject the workflow at
+  # startup. Cockpit/manual deploys target an env by dispatching on the matching branch (main/develop).
   config:
     runs-on: ubuntu-latest
-    environment: ${{ (inputs.environment != '' && inputs.environment) || (github.ref_name == 'main' && 'prod' || 'dev') }}
+    environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     outputs:
       aws-region: ${{ vars.AWS_REGION }}
       ecr-repository: ${{ vars.ECR_REPOSITORY }}
@@ -46,6 +40,9 @@ jobs:
 
   deploy:
     needs: config
+    # Skip (green, not failed) until the app is provisioned — the very first template "Initial commit"
+    # push has no Actions vars yet, so without this gate it would deploy with empty inputs and fail.
+    if: ${{ needs.config.outputs.ecr-repository != '' }}
     uses: ajnacloud-ksj/ajna-github-workflows/.github/workflows/reusable-lambda-v2.yml@main
     with:
       aws-region: ${{ needs.config.outputs.aws-region }}
