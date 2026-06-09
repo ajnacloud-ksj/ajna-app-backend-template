@@ -51,8 +51,11 @@ jobs:
       lambda-role-arn: ${{ needs.config.outputs.lambda-role-arn }}
       codeartifact-account: ${{ needs.config.outputs.codeartifact-account }}
       codeartifact-region: ${{ needs.config.outputs.codeartifact-region }}
-      memory-size: ${{ needs.config.outputs.memory-size && fromJSON(needs.config.outputs.memory-size) || 512 }}
-      timeout: ${{ needs.config.outputs.timeout && fromJSON(needs.config.outputs.timeout) || 300 }}
+      # NB: fromJSON() must wrap a `vars.*` value (resolvable at startup), NOT a `needs.*.outputs.*`
+      # value — GitHub can't evaluate needs-outputs during startup validation and rejects the whole
+      # workflow ("startup_failure"). These are repo-level optional overrides; empty → the defaults.
+      memory-size: ${{ vars.LAMBDA_MEMORY_SIZE && fromJSON(vars.LAMBDA_MEMORY_SIZE) || 512 }}
+      timeout: ${{ vars.LAMBDA_TIMEOUT && fromJSON(vars.LAMBDA_TIMEOUT) || 300 }}
       environment-variables: >-
         ENVIRONMENT=${{ needs.config.outputs.app-environment }},
         IBEX_API_URL=${{ needs.config.outputs.ibex-api-url }},
