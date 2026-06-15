@@ -1,14 +1,14 @@
-FROM public.ecr.aws/lambda/python:3.12-arm64
+# Built on the shared Ajna Lambda base image (ajna-lambda-base) — the SDK + common deps are
+# PREBAKED (ajna-cloud, fastapi, uvicorn, boto3, requests, python-jose, python-dotenv, uv). The
+# build passes BASE_IMAGE = <this account's ECR>/ajna-lambda-base:<tag>; bumping that tag is the
+# single SDK-version lever (no private CodeArtifact wheel download — the SDK travels in the image).
+ARG BASE_IMAGE=public.ecr.aws/lambda/python:3.12-arm64
+FROM ${BASE_IMAGE}
 
-# Install uv for fast package management
-RUN pip install uv
-
-# Copy SDK wheel (downloaded by CI) + requirements
-COPY ajna_cloud-*.whl requirements.txt ${LAMBDA_TASK_ROOT}/
-
-# Install dependencies
-RUN uv pip install --system --no-cache ${LAMBDA_TASK_ROOT}/ajna_cloud-*.whl && \
-    uv pip install --system --no-cache -r ${LAMBDA_TASK_ROOT}/requirements.txt
+# App-specific dependencies only — ajna-cloud + the common libs are prebaked in the base image.
+COPY requirements.txt ${LAMBDA_TASK_ROOT}/
+RUN command -v uv >/dev/null 2>&1 || pip install --no-cache-dir uv
+RUN uv pip install --system --no-cache -r ${LAMBDA_TASK_ROOT}/requirements.txt
 
 # Copy source code
 COPY src/ ${LAMBDA_TASK_ROOT}/src/
