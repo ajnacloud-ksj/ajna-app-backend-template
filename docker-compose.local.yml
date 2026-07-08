@@ -1,20 +1,27 @@
-# Local development stack — hot-reload for backend and UI.
-# NOT for production. Production: backend → Lambda, UI → CloudFront.
+# Local development stack — hot-reload for backend and UI. NOT for production.
+# (Production: backend → Lambda from Dockerfile; UI → CloudFront.)
 #
-# Ports and AJNA_SDK_PATH are injected by dev.sh (auto-detected / resolved).
-# Do not run this file with `docker compose` directly — use ./dev.sh instead.
-#
-# Assumes {{app-name}}-ui is cloned as a sibling of this repo:
-#   parent/
-#   ├── {{app-name}}-backend/   ← this repo (run dev.sh from here)
-#   └── {{app-name}}-ui/        ← clone: git clone git@github.com:{{github-org}}/{{app-name}}-ui.git ../{{app-name}}-ui
+# GENERIC + NO Dockerfile.local. Local builds the SAME prod `Dockerfile`
+# (FROM ${BASE_IMAGE}), just with:
+#   - the ghcr MIRROR of ajna-lambda-base as the base (GitHub-token auth, no AWS creds),
+#   - the Lambda CMD replaced by a uvicorn hot-reload command,
+#   - src/ + local_dev.py bind-mounted over the baked copies so edits reload instantly.
+# One Dockerfile, no drift, works for any app's Dockerfile. dev.sh injects
+# ports / AJNA_SDK_PATH / UI_DIR / LOCAL_PLUGINS_DIR. Do NOT run `docker compose`
+# directly — use ./dev.sh.
 
 services:
-  # ── Backend (Python Lambda → local FastAPI wrapper) ─────────────────────────
+  # ── Backend: the prod Dockerfile, run as uvicorn (hot-reload) instead of Lambda ──
   backend:
     build:
       context: .
-      dockerfile: Dockerfile.local
+      dockerfile: Dockerfile
+      target: dev                     # the multi-stage dev stage: uvicorn hot-reload
+      args:
+        # Local pulls the base from the ghcr mirror; SAME image+tag as prod (ECR) — the
+        # single SDK-version lever. dev.sh reads THIS value for the ghcr login.
+        BASE_IMAGE: ghcr.io/ajnacloud-ksj/ajna-lambda-base:py312-1.30.4
+    # The dev stage's CMD already runs uvicorn --reload; no entrypoint/command override needed.
     ports:
       - "${PORT_BACKEND:-8000}:8000"
     env_file:
@@ -22,31 +29,28 @@ services:
     environment:
       ENVIRONMENT: development
     volumes:
-      # Hot-reload: src changes reflected immediately (no rebuild needed)
-      - ./src:/app/src:ro
-      # local_dev.py is the FastAPI shim wrapping the Lambda handler
-      - ./local_dev.py:/app/local_dev.py:ro
-      # ajna-cloud-sdk: editable install from local clone
-      # rw needed so pip can write ajna_cloud.egg-info for editable install
-      # AJNA_SDK_PATH is always set by dev.sh — never run this file directly
-      - ${AJNA_SDK_PATH}:/ajna-cloud-sdk:rw
-      # AWS credentials (only needed when AUTH_MODE=cognito)
+      # Hot-reload: bind-mount over the Dockerfile's baked COPY so edits reflect immediately.
+      - ./src:/var/task/src:ro
+      - ./local_dev.py:/var/task/local_dev.py:ro
+      # AWS creds: local talks to the REAL shared dev Cognito pool (true parity). Each dev
+      # needs their own scoped creds in ~/.aws. IbexDB/S3/DynamoDB still run fully local.
       - ~/.aws:/root/.aws:ro
+      # Tenant-plugins repo bind-mounted for hot-reloaded local dev (dev.sh sets LOCAL_PLUGINS_DIR).
+      - ${LOCAL_PLUGINS_DIR:-./local-plugins}:/var/task/local-plugins:ro
     restart: unless-stopped
     healthcheck:
       test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
-        ]
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
       interval: 10s
       timeout: 5s
-      retries: 3
-      start_period: 25s
+      retries: 5
+      # Generous grace for a cold first build (new deps like pyarrow/duckdb can be slow).
+      start_period: 120s
 
-  # ── UI (Vite + React) — requires {{app-name}}-ui cloned as a sibling ─────────
+  # ── UI (Vite + React) — the ${PROJECT_NAME}-ui repo, cloned as a sibling by dev.sh ──
   ui:
     image: node:20-alpine
     working_dir: /app
@@ -56,8 +60,7 @@ services:
       NODE_ENV: development
       VITE_API_URL: "http://localhost:${PORT_BACKEND:-8000}/v1"
     volumes:
-      - ../{{app-name}}-ui:/app
-      # Isolated node_modules avoids host/container platform conflicts
+      - ${UI_DIR:-../ui}:/app
       - ui_node_modules:/app/node_modules
     command: sh -c "npm install --silent && npm run dev -- --host 0.0.0.0 --port 5173"
     depends_on:
