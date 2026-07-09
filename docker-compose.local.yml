@@ -20,7 +20,7 @@ services:
       args:
         # Local pulls the base from the ghcr mirror; SAME image+tag as prod (ECR) — the
         # single SDK-version lever. dev.sh reads THIS value for the ghcr login.
-        BASE_IMAGE: ghcr.io/ajnacloud-ksj/ajna-lambda-base:py312-1.30.4
+        BASE_IMAGE: ghcr.io/ajnacloud-ksj/ajna-lambda-base:py312-1.30.5
     # The dev stage's CMD already runs uvicorn --reload; no entrypoint/command override needed.
     ports:
       - "${PORT_BACKEND:-8000}:8000"
