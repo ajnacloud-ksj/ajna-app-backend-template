@@ -160,14 +160,23 @@ find_free_port() {
   echo "$port"
 }
 
+# Deterministic per-app port offset (0-99) derived from the app name. Two different apps get
+# different offsets, so they run SIDE BY SIDE without colliding; the SAME app always gets the same
+# ports, so each app's URLs stay consistent across runs. (cksum is POSIX — same on macOS + Linux.)
+_app_port_offset() {
+  local h; h=$(printf '%s' "$PROJECT_NAME" | cksum | cut -d' ' -f1)
+  echo $(( h % 100 ))
+}
+
 resolve_ports() {
   # Fixed, predictable ports — no auto-shifting. The team wants consistent URLs
   # (backend :8000, UI :5173) every run. dev.sh recreates its OWN containers on these
   # ports without conflict (same compose project). If a FOREIGN process holds one, warn
   # clearly rather than silently shifting (which previously persisted into .dev_ports).
   # Override with PORT_BACKEND_OVERRIDE / PORT_UI_OVERRIDE if you truly need to.
-  PORT_BACKEND=${PORT_BACKEND_OVERRIDE:-$DEFAULT_BACKEND}
-  PORT_UI=${PORT_UI_OVERRIDE:-$DEFAULT_UI}
+  local off; off=$(_app_port_offset)
+  PORT_BACKEND=${PORT_BACKEND_OVERRIDE:-$(( DEFAULT_BACKEND + off ))}
+  PORT_UI=${PORT_UI_OVERRIDE:-$(( DEFAULT_UI + off ))}
 
   for pair in "backend:$PORT_BACKEND" "UI:$PORT_UI"; do
     local nm=${pair%%:*} pt=${pair##*:}
