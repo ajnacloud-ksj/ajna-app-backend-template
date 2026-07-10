@@ -20,7 +20,7 @@ services:
       args:
         # Local pulls the base from the ghcr mirror; SAME image+tag as prod (ECR) — the
         # single SDK-version lever. dev.sh reads THIS value for the ghcr login.
-        BASE_IMAGE: ghcr.io/ajnacloud-ksj/ajna-lambda-base:py312-1.30.5
+        BASE_IMAGE: ghcr.io/ajnacloud-ksj/ajna-lambda-base:py312-1.31.0
     # The dev stage's CMD already runs uvicorn --reload; no entrypoint/command override needed.
     ports:
       - "${PORT_BACKEND:-8000}:8000"
@@ -36,7 +36,7 @@ services:
       # needs their own scoped creds in ~/.aws. IbexDB/S3/DynamoDB still run fully local.
       - ~/.aws:/root/.aws:ro
       # Tenant-plugins repo bind-mounted for hot-reloaded local dev (dev.sh sets LOCAL_PLUGINS_DIR).
-      - ${LOCAL_PLUGINS_DIR:-./local-plugins}:/var/task/local-plugins:ro
+      - ${LOCAL_PLUGINS_DIR:-./local-plugins}:/app/local-plugins:ro
     restart: unless-stopped
     healthcheck:
       test:
