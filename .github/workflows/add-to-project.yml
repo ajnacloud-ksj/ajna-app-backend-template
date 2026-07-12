@@ -1,0 +1,19 @@
+name: Add to project
+
+# {{project-url}} is substituted by ajna-app-infra's RepoSeed on app provision with THIS
+# app's board URL (github_project.py creates the board). Until then the step self-skips.
+on:
+  issues:
+    types: [opened, reopened, transferred]
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+jobs:
+  add-to-project:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add to project
+        if: ${{ !contains('{{project-url}}', 'project-url') }}
+        uses: actions/add-to-project@v1.0.2
+        with:
+          project-url: "{{project-url}}"
+          github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}
