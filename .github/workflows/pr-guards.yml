@@ -1,0 +1,52 @@
+########################################################################################################
+# PR guards — the two mechanical checks that make releases automatic.
+#
+#   * Conventional PR title  -> drives the SemVer bump (with squash-merge, the title IS the commit)
+#   * Exactly one type label -> drives the auto-generated release notes (.github/release.yml)
+#
+# Both are hard-fail because both are one-click fixes that produce release artifacts.
+# Issue linking (Closes #N) is deliberately NOT enforced — the boards track PRs directly and the
+# release notes come from labels, so nothing breaks without it. Link issues when the PR closes one.
+#
+# Untrusted input (title, labels) is only ever read via env vars — never interpolated into run:.
+########################################################################################################
+name: pr guards
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+
+jobs:
+  title:
+    name: Conventional PR title
+    runs-on: ubuntu-latest
+    steps:
+      - name: Title follows Conventional Commits
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if printf '%s' "$TITLE" | grep -qE '^(feat|fix|chore|docs|refactor|test|ci|perf|build|style|release|revert)(\([^)]+\))?!?: .+'; then
+            echo "ok: $TITLE"
+          else
+            echo "::error::PR title must follow Conventional Commits, e.g. 'feat(api): add batch export' — it drives the version bump."
+            exit 1
+          fi
+
+  type-label:
+    name: Exactly one type label
+    runs-on: ubuntu-latest
+    steps:
+      - name: PR carries one of feature/bug/tech-debt/docs/chore
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        run: |
+          count=0
+          for l in $LABELS; do
+            case "$l" in feature|bug|tech-debt|docs|chore) count=$((count+1));; esac
+          done
+          if [ "$count" -eq 1 ]; then
+            echo "ok: $LABELS"
+          else
+            echo "::error::Add exactly one type label (feature / bug / tech-debt / docs / chore) — it drives the release notes. Found: $count"
+            exit 1
+          fi
