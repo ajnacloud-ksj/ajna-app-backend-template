@@ -1,0 +1,49 @@
+name: Tag prod release
+
+# On merge to `main` (a prod promotion = a release), compute the next SemVer from
+# Conventional Commits since the last tag, then create an annotated git tag + a
+# GitHub Release with auto-generated notes. Built-in GITHUB_TOKEN only (no PAT).
+# `develop` is continuous and intentionally left untagged — tags are a prod concept.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compute next version (Conventional Commits)
+        id: v
+        run: |
+          git fetch --tags --force
+          latest=$(git tag --list 'v*' --sort=-v:refname | head -1); latest=${latest:-v0.0.0}
+          base=${latest#v}; base=${base%%[-+]*}
+          IFS=. read -r MA MI PA <<<"$base"; MA=${MA:-0}; MI=${MI:-0}; PA=${PA:-0}
+          range="HEAD"; git rev-parse "$latest" >/dev/null 2>&1 && range="$latest..HEAD"
+          log=$(git log --format='%s%n%b' $range 2>/dev/null || echo "")
+          if printf '%s' "$log" | grep -qE '^[a-zA-Z]+(\([^)]+\))?!:|BREAKING[ -]CHANGE'; then
+            MA=$((MA+1)); MI=0; PA=0
+          elif printf '%s' "$log" | grep -qE '^feat(\([^)]+\))?:'; then
+            MI=$((MI+1)); PA=0
+          else
+            PA=$((PA+1))
+          fi
+          echo "version=v$MA.$MI.$PA" >> "$GITHUB_OUTPUT"
+      - name: Create tag + GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          if git rev-parse "$V" >/dev/null 2>&1; then echo "$V already exists — skipping"; exit 0; fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$V" -m "Release $V"
+          git push origin "$V"
+          gh release create "$V" --generate-notes --title "$V" --target "$GITHUB_SHA" || true
+          echo "Tagged $V"
