@@ -1,0 +1,20 @@
+# Auto-generated release notes, categorised by PR label.
+# Notes are built from PRs merged since the last tag — they do NOT require issue links,
+# so they stay complete regardless of anyone's Closes-#N habits. The pr-guards workflow
+# enforces that every PR carries exactly one type label, which is what feeds this.
+changelog:
+  exclude:
+    labels: [duplicate, invalid, wontfix]
+  categories:
+    - title: Features
+      labels: [feature]
+    - title: Fixes
+      labels: [bug]
+    - title: Security
+      labels: [security]
+    - title: Tech debt
+      labels: [tech-debt]
+    - title: Docs & chores
+      labels: [docs, chore]
+    - title: Other
+      labels: ["*"]
