@@ -1,15 +1,21 @@
 name: Tag prod release
 
-# On merge to `main` (a prod promotion = a release), compute the next SemVer from
-# Conventional Commits since the last tag, then create an annotated git tag + a
-# GitHub Release with auto-generated notes. Built-in GITHUB_TOKEN only (no PAT).
-# `develop` is continuous and intentionally left untagged — tags are a prod concept.
+# On merge to `main` (a prod promotion = a release): tag + GitHub Release with auto-notes,
+# and close the matching milestone. Built-in GITHUB_TOKEN only (no PAT).
+#
+# VERSION SOURCE — one string end to end: the cut-release promotion PR titles itself
+# "release: <repo> vX.Y.Z", and the squash/merge commit carries that subject. When present,
+# that version IS the tag — never recomputed, so tag == milestone == PR title == notes,
+# with no human retyping anywhere. Direct pushes / other merges fall back to computing
+# the bump from Conventional Commits since the last tag.
+# `develop` is continuous and intentionally untagged — tags are a prod concept.
 on:
   push:
     branches: [main]
 
 permissions:
   contents: write
+  issues: write   # closing the release milestone
 
 jobs:
   tag:
@@ -18,10 +24,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Compute next version (Conventional Commits)
+      - name: Resolve version (promotion PR title, else computed)
         id: v
         run: |
           git fetch --tags --force
+          # 1) the promotion-PR path: merge commit subject "release: <repo> vX.Y.Z"
+          subject=$(git log -1 --pretty=%s)
+          planned=$(printf '%s' "$subject" | grep -oE 'release: [^ ]+ v[0-9]+\.[0-9]+\.[0-9]+' | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' || true)
+          if [ -n "$planned" ]; then
+            echo "version=$planned" >> "$GITHUB_OUTPUT"
+            echo "version from promotion PR title: $planned"
+            exit 0
+          fi
+          # 2) fallback: compute from Conventional Commits since the last tag
           latest=$(git tag --list 'v*' --sort=-v:refname | head -1); latest=${latest:-v0.0.0}
           base=${latest#v}; base=${base%%[-+]*}
           IFS=. read -r MA MI PA <<<"$base"; MA=${MA:-0}; MI=${MI:-0}; PA=${PA:-0}
@@ -47,3 +62,17 @@ jobs:
           git push origin "$V"
           gh release create "$V" --generate-notes --title "$V" --target "$GITHUB_SHA" || true
           echo "Tagged $V"
+      - name: Close the release milestone
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          # The milestone carrying this version (rolled from vNext at cut time) closes when
+          # the release ships — plan and reality converge without anyone touching either.
+          n=$(gh api "repos/$GITHUB_REPOSITORY/milestones?state=open" --jq ".[] | select(.title==\"$V\") | .number" | head -1)
+          if [ -n "$n" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/milestones/$n" -f state=closed >/dev/null
+            echo "milestone $V closed"
+          else
+            echo "no open milestone named $V (fine — nothing to close)"
+          fi
