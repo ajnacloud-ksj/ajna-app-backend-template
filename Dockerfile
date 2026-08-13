@@ -1,3 +1,6 @@
+# check=skip=InvalidDefaultArgInFrom
+# ^ BASE_IMAGE is intentionally defaulted-less (see below); this silences the lint that
+#   would otherwise warn on every legitimate build.
 # Built on the shared Ajna Lambda base image (ajna-lambda-base) — the SDK + common deps are
 # PREBAKED (ajna-cloud, fastapi, uvicorn, boto3, requests, python-jose, python-dotenv, uv). The
 # build passes BASE_IMAGE = <this account's ECR>/ajna-lambda-base:<tag>; bumping that tag is the
@@ -8,7 +11,12 @@
 #   - local  (compose):   build.target: dev → uvicorn hot-reload, src/ bind-mounted.
 # BASE_IMAGE is injected by the build: CodeBuild passes this account's ECR ref; local
 # docker-compose.local.yml passes the ghcr mirror. Same image + tag → dev == prod SDK.
-ARG BASE_IMAGE=public.ecr.aws/lambda/python:3.12-arm64
+# Deliberately NO default. A fallback to public.ecr.aws/lambda/python here is worse than a
+# broken build: it silently produces an off-base image that reinstalls the whole SDK stack, so
+# the app's ECR repo stores a full private copy of every layer instead of sharing the base —
+# and since ECR deduplicates only within a repository, that copy is billed and pulled forever.
+# An unset BASE_IMAGE must fail loudly ("base name should not be blank") so the build gets fixed.
+ARG BASE_IMAGE
 
 # ── base: shared SDK (from ajna-lambda-base) + app-specific deps ──────────────
 FROM ${BASE_IMAGE} AS base
