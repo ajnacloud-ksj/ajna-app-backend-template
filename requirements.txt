@@ -1,7 +1,10 @@
-boto3>=1.28.0
-requests>=2.28.0
-python-jose[cryptography]>=3.3.0
-python-dotenv>=1.0.0
+# App-specific dependencies ONLY.
+#
+# The ajna-lambda-base image already provides, and pins, the whole common stack:
+#   ajna-cloud (the SDK)  fastapi  uvicorn  python-dotenv  python-jose[cryptography]
+#   boto3  requests  jinja2      ... plus `uv` for this file's install step.
+#
+# Do not re-list any of those here. Re-listing them makes this build resolve against PyPI for
+# packages the base already satisfies, and invites an app to drift off the version the base pins
+# — the base image tag is the single SDK/common-dep lever (see Dockerfile).
 openpyxl>=3.0
-fastapi>=0.100.0
-uvicorn>=0.23.0
