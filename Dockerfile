@@ -18,13 +18,38 @@
 # An unset BASE_IMAGE must fail loudly ("base name should not be blank") so the build gets fixed.
 ARG BASE_IMAGE
 
-# ── base: shared SDK (from ajna-lambda-base) + app-specific deps ──────────────
-FROM ${BASE_IMAGE} AS base
+# ── deps: resolve app requirements with uv, in a stage that is THROWN AWAY ────
+# `${BASE_IMAGE}-build` is the base's build tag: identical contents plus the uv binary. No extra
+# build-arg is needed — BASE_IMAGE ends in the tag, so the suffix lands on the tag.
+#
+# uv is a 47.6 MiB static Rust binary and it is BUILD tooling: it installs requirements.txt and
+# is then never used again. It used to live in the base's runtime layer, so it shipped to
+# production in every Lambda image and could not be removed downstream (deleting a file from a
+# parent layer only writes a whiteout — the bytes still ship). Resolving deps here and copying
+# only the result forward is what keeps it out. See ajna-cloud-sdk#248.
+FROM ${BASE_IMAGE}-build AS deps
 
 # App-specific dependencies only — ajna-cloud + the common libs are prebaked in the base image.
+#
+# --target, NOT --system: this installs ONLY what requirements.txt adds. Copying the whole
+# site-packages forward instead DUPLICATES the base's ~118MB copy, because the parent layer still
+# ships — measured on the first app to try it, that produced a LARGER image than the one it
+# replaced. Copying just the delta is the entire point.
 COPY requirements.txt ${LAMBDA_TASK_ROOT}/
-RUN command -v uv >/dev/null 2>&1 || pip install --no-cache-dir uv
-RUN uv pip install --system --no-cache -r ${LAMBDA_TASK_ROOT}/requirements.txt
+RUN uv pip install --target /app-deps --no-cache -r ${LAMBDA_TASK_ROOT}/requirements.txt
+
+# ── base: shared SDK (from ajna-lambda-base) + the app deps resolved above ────
+FROM ${BASE_IMAGE} AS base
+COPY --from=deps /app-deps /app-deps
+# The base sets PYTHONPATH=/var/task; extend it rather than replace it.
+#
+# Everything on PYTHONPATH precedes site-packages in sys.path, so /app-deps SHADOWS the base for
+# any package present in both. That is the desired direction — an app that pins a dependency
+# should get its pin — but it differs from the old `uv pip install --system`, which merged into
+# the base's site-packages and left an already-satisfied requirement alone. An app pinning
+# something OLDER than the base now actually gets the older version, so keep requirements.txt to
+# genuine app-specific deps.
+ENV PYTHONPATH=/var/task:/app-deps
 
 # ── dev: local hot-reload. src/ + local_dev.py are bind-mounted by
 #    docker-compose.local.yml (not COPY'd), so edits reload with no rebuild.
