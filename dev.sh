@@ -98,7 +98,7 @@ resolve_ibex_paths() {
 resolve_ibex_paths
 
 # ── Per-repo tracking branches ────────────────────────────────────────────────
-# NOTE: ibex-policy and ibex-query-engine-lib are main-only (no develop branch).
+# NOTE: ibex-policy-lib and ibex-query-engine-lib are main-only (no develop branch).
 # Override any of these via env vars before running dev.sh.
 SDK_BRANCH="${SDK_BRANCH:-main}"
 IBEX_DB_BRANCH="${IBEX_DB_BRANCH:-main}"
@@ -109,11 +109,11 @@ PLUGINS_BRANCH="${PLUGINS_BRANCH:-main}"
 SELF_BRANCH="${SELF_BRANCH:-develop}"
 
 # Repos required for the local IbexDB stack — auto-cloned when missing.
-# Each entry: "<local-path>|<git-remote>|<branch>". ibex-policy and
+# Each entry: "<local-path>|<git-remote>|<branch>". ibex-policy-lib and
 # ibex-query-engine-lib are bind-mounted by ibex-db-lambda's compose file.
 IBEX_REPOS=(
   "$IBEX_BASE/ibex-db-lambda|git@github.com:ajnacloud-ksj/ibex-db-lambda.git|$IBEX_DB_BRANCH"
-  "$IBEX_BASE/ibex-policy|git@github.com:ajnacloud-ksj/ibex-policy-lib.git|$IBEX_POLICY_BRANCH"
+  "$IBEX_BASE/ibex-policy-lib|git@github.com:ajnacloud-ksj/ibex-policy-lib.git|$IBEX_POLICY_BRANCH"
   "$IBEX_BASE/ibex-query-engine-lib|git@github.com:ajnacloud-ksj/ibex-query-engine-lib.git|$IBEX_QE_BRANCH"
 )
 
@@ -340,6 +340,7 @@ ibex_use_local() {
 # Clone one or more "<path>|<remote>|<branch>" repo entries that aren't present yet.
 # Quiet about repos already cloned. Returns the number cloned via $_CLONED.
 clone_repos() {
+  migrate_ibex_policy_dir
   _CLONED=0
   local entry repo_path remote branch name
   for entry in "$@"; do
@@ -388,6 +389,22 @@ PY
   # keep the generated shim out of the plugins repo's git status
   local gi="$PLUGINS_DIR/.gitignore"
   grep -qxF 'bindings.dev.json' "$gi" 2>/dev/null || echo 'bindings.dev.json' >> "$gi"
+}
+
+# ibex-policy was renamed ibex-policy-lib, and ibex-db-lambda's compose now mounts
+# ../ibex-policy-lib (ibex-db-lambda a14901e). Machines set up before the rename have
+# the clone at ibex-policy, so the stack failed with "/ibex-policy does not appear to
+# be a Python project" — Docker had bind-mounted, and so created, an EMPTY
+# ibex-policy-lib. Point the new name at the existing clone instead of re-cloning.
+# Never moves or deletes a real checkout; only an empty directory is replaced.
+migrate_ibex_policy_dir() {
+  local old="$IBEX_BASE/ibex-policy" new="$IBEX_BASE/ibex-policy-lib"
+  [ -d "$old/.git" ] || return 0                      # nothing to migrate from
+  if [ -d "$new" ] && [ ! -L "$new" ] && [ -z "$(ls -A "$new" 2>/dev/null)" ]; then
+    rmdir "$new"                                      # empty dir left by a bind mount
+  fi
+  [ -e "$new" ] || [ -L "$new" ] && return 0          # already a clone or a link
+  ln -s ibex-policy "$new" && info "Linked ibex-policy-lib → ibex-policy (repo renamed; existing clone reused)"
 }
 
 # Auto-clone the IbexDB stack repos if missing, then re-resolve paths so the
@@ -645,6 +662,7 @@ pull_repo() {
 # Pull latest code for every repo onto its configured branch.
 cmd_pull() {
   section "Pulling Latest Code"
+  migrate_ibex_policy_dir
   _PULL_FAILED=0
   local entry repo_path remote branch name
   for entry in "${PULL_REPOS[@]}"; do
@@ -926,7 +944,7 @@ case "$CMD" in
     echo ""
     echo "Per-repo branches for pull/update (override via env var):"
     echo "  ajna-cloud-sdk → \$SDK_BRANCH (main)         ibex-db-lambda → \$IBEX_DB_BRANCH (develop)"
-    echo "  ibex-policy → \$IBEX_POLICY_BRANCH (main)     ibex-query-engine-lib → \$IBEX_QE_BRANCH (main)"
+    echo "  ibex-policy-lib → \$IBEX_POLICY_BRANCH (main)     ibex-query-engine-lib → \$IBEX_QE_BRANCH (main)"
     echo "  ${PROJECT_NAME}-ui → \$UI_BRANCH (develop)          ${PROJECT_NAME}-backend → \$SELF_BRANCH (develop)"
     echo "  pull stashes local changes before pulling and pops them back afterwards."
     echo ""
