@@ -127,6 +127,37 @@ def test_query_items_pagination():
     assert len(json.loads(resp["body"])["data"]) == 2
 
 
+
+class _RecordingDB(FakeIbexDB):
+    """FakeIbexDB that records the kwargs of every query call."""
+
+    def __init__(self):
+        super().__init__()
+        self.query_calls = []
+
+    def query(self, table, **kw):
+        self.query_calls.append(kw)
+        return super().query(table, **kw)
+
+
+def test_query_items_list_read_uses_the_sdk_default_cache():
+    db = _RecordingDB()
+    with as_role("admin"):
+        resp = query_items(event(body={"limit": 10}), ctx(db, "admin"))
+    assert resp["statusCode"] == 200
+    assert "use_cache" not in db.query_calls[-1]
+
+
+def test_query_items_with_projection_bypasses_the_cache():
+    # The SDK cache key does not include the projection, so a caller-chosen column set
+    # must not be served from (or stored into) the shared read cache.
+    db = _RecordingDB()
+    with as_role("admin"):
+        resp = query_items(event(body={"projection": ["id", "name"]}), ctx(db, "admin"))
+    assert resp["statusCode"] == 200
+    assert db.query_calls[-1]["projection"] == ["id", "name"]
+    assert db.query_calls[-1]["use_cache"] is False
+
 # ── get_item ───────────────────────────────────────────────────────────────────
 
 def test_get_item_found():
