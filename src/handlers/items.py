@@ -69,13 +69,20 @@ def query_items(event: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any
     offset = int(body.get('offset', 0))
 
     try:
-        kwargs: Dict[str, Any] = {"limit": limit, "use_cache": False}
+        # Plain list reads use the SDK's default read cache. Pass use_cache=False only when
+        # the read gates a write in this request (duplicate/existence check), supplies values
+        # written onto a record, or re-reads a record this request just wrote.
+        kwargs: Dict[str, Any] = {"limit": limit}
         if body.get('filters'):
             kwargs['filters'] = body['filters']
         if body.get('sort'):
             kwargs['sort'] = body['sort']
         if body.get('projection'):
             kwargs['projection'] = body['projection']
+            # The SDK cache key covers table/filters/sort/limit/offset (+ caller), NOT the
+            # projection — a cached full-row result could be replayed for a projected read
+            # (or vice versa). Bypass the cache whenever the caller picks the columns.
+            kwargs['use_cache'] = False
         if offset > 0:
             kwargs['offset'] = offset
 

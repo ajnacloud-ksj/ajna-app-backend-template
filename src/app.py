@@ -60,9 +60,10 @@ router = Router({
     ('GET',  '/v1/public/tenant/{slug}/config'):  _tenant_config.get_config,
 
     # ── Auth ───────────────────────────────────────────────────────────────────
-    ('POST', '/v1/auth/login'):        auth.login,
-    ('GET',  '/v1/auth/me'):           auth.me,
-    ('GET',  '/v1/auth/permissions'):  auth.permissions,
+    # The SDK's canonical map (login, refresh, logout, mfa, me, permissions, ...).
+    # Never hand-list /v1/auth routes: a route advertised public at the edge but
+    # missing here 404s, and logout then leaves the token valid. See handlers/auth.py.
+    **auth.routes,
 
     # ── User Sync ──────────────────────────────────────────────────────────────
     ('POST', '/v1/admin/users/sync'):  users.sync_users,
