@@ -33,7 +33,10 @@ ARG BASE_IMAGE
 # upgrade changes dependency resolution for every app at once.
 # The final image is byte-identical either way — uv never reaches the stage that ships.
 FROM ${BASE_IMAGE} AS deps
-COPY --from=ghcr.io/astral-sh/uv:0.12.13 /uv /usr/local/bin/uv
+# Pinned by DIGEST, not just the tag: a tag on a public registry can be repointed at new
+# content, and this binary resolves every app dependency. The digest is the multi-arch index
+# for uv 0.12.13 (linux/arm64 + linux/amd64), so it pins what actually runs.
+COPY --from=ghcr.io/astral-sh/uv:0.12.13@sha256:b485bd65cc2cf1c9a93b3554012c9c3778cf7b1b5fd3d3096ce9e1226c97e1e6 /uv /usr/local/bin/uv
 
 # App-specific dependencies only — ajna-cloud + the common libs are prebaked in the base image.
 #
