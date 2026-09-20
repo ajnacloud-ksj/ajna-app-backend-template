@@ -19,15 +19,24 @@
 ARG BASE_IMAGE
 
 # ── deps: resolve app requirements with uv, in a stage that is THROWN AWAY ────
-# `${BASE_IMAGE}-build` is the base's build tag: identical contents plus the uv binary. No extra
-# build-arg is needed — BASE_IMAGE ends in the tag, so the suffix lands on the tag.
-#
 # uv is a 47.6 MiB static Rust binary and it is BUILD tooling: it installs requirements.txt and
 # is then never used again. It used to live in the base's runtime layer, so it shipped to
 # production in every Lambda image and could not be removed downstream (deleting a file from a
 # parent layer only writes a whiteout — the bytes still ship). Resolving deps here and copying
 # only the result forward is what keeps it out. See ajna-cloud-sdk#248.
-FROM ${BASE_IMAGE}-build AS deps
+#
+# uv comes from its own PUBLIC image, not from `${BASE_IMAGE}-build` (the base plus uv). The
+# base's build tag is published to ECR but has never reached the ghcr mirror, so a developer
+# with GitHub access and no AWS account could not build any app at all. ghcr carries the runtime
+# tag for every release, so pulling uv from Astral removes the only AWS-only step in a local
+# build. Pinned to the version the base ships (py312-1.54.2-build → uv 0.12.13): a silent uv
+# upgrade changes dependency resolution for every app at once.
+# The final image is byte-identical either way — uv never reaches the stage that ships.
+FROM ${BASE_IMAGE} AS deps
+# Pinned by DIGEST, not just the tag: a tag on a public registry can be repointed at new
+# content, and this binary resolves every app dependency. The digest is the multi-arch index
+# for uv 0.12.13 (linux/arm64 + linux/amd64), so it pins what actually runs.
+COPY --from=ghcr.io/astral-sh/uv:0.12.13@sha256:b485bd65cc2cf1c9a93b3554012c9c3778cf7b1b5fd3d3096ce9e1226c97e1e6 /uv /usr/local/bin/uv
 
 # App-specific dependencies only — ajna-cloud + the common libs are prebaked in the base image.
 #
