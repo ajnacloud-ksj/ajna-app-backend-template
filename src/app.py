@@ -120,6 +120,10 @@ router = Router({
     ('POST', '/v1/storage/download-url'): storage.get_download_url,
 })
 
+# Invite/reset forms read the pool's password rule from here (SDK >= email-invites release).
+if users.password_policy is not None:
+    router.add('GET', '/v1/users/password-policy', users.password_policy)
+
 # ── Schema-aware CRUD (validates required fields + enforces write roles) ───────
 _CRUD_METHODS = ('list', 'create', 'get', 'update', 'delete')
 router.crud('/v1/items', ITEMS, _crud, id_param='item_id', methods=_CRUD_METHODS)

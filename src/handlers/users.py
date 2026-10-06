@@ -7,6 +7,7 @@ invite or remove, the SDK syncs app_users in IbexDB automatically.
 Routes (wired in app.py):
     POST   /v1/admin/users/sync
     GET    /v1/users
+    GET    /v1/users/password-policy   (SDK with email invites; see below)
     POST   /v1/users/invite
     PUT    /v1/users/{username}/role
     POST   /v1/users/{username}/lock
@@ -32,3 +33,8 @@ unlock_user = _handlers.unlock_user
 reset_password = _handlers.reset_password
 remove_user = _handlers.remove_user
 sync_users = _handlers.sync_users
+
+# The pool's password rule + how invites are sent (email by default; admin-set password only
+# when AJNA_ADMIN_SET_PASSWORD=true). Newer SDKs only — on an older base image this is None and
+# app.py leaves the route out, so the UI falls back to a generic hint.
+password_policy = getattr(_handlers, "password_policy", None)

@@ -61,3 +61,12 @@ def test_post_logout_dispatches_instead_of_404():
     resp = router.route(event, {})
     assert resp["statusCode"] == 200, resp
     assert json.loads(resp["body"]).get("ok") is True
+
+
+def test_password_policy_route_follows_the_sdk():
+    """Served exactly when the SDK provides the handler, so an older base image still boots."""
+    from src.handlers import users
+    key = ('GET', '/v1/users/password-policy')
+    assert (key in router.route_table) == (users.password_policy is not None)
+    if users.password_policy is not None:
+        assert router.route_table[key] == users.password_policy
