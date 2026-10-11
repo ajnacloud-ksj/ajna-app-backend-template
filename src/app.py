@@ -80,6 +80,7 @@ router = Router({
     ('POST',   '/v1/admin/database/query'):        _db_admin.execute_query,
 
     # ── Tenant Management ──────────────────────────────────────────────────────
+    # Create is disabled (410): customers are added in the cockpit ("add org to app").
     ('POST',   '/v1/admin/tenants'):                       admin.create_tenant,
     ('GET',    '/v1/admin/tenants'):                       admin.list_tenants,
     ('GET',    '/v1/admin/tenants/{tenant_id}'):           admin.get_tenant,

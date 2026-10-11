@@ -96,8 +96,10 @@ tenant's data the app reads/writes is resolved per request in this order:
 2. the logged-in user's Cognito group (`{{app-name}}-{tenant}-{role}`), then
 3. the `TENANT_ID` env var (fallback).
 
-To scope local dev to one tenant, set `TENANT_ID` in `.env` and restart. Onboard new
-tenants with `scripts/onboard_tenant.sh` (creates Cognito groups + admin user + IbexDB RBAC).
+To scope local dev to one tenant, set `TENANT_ID` in `.env` and restart. The app does not
+create tenants: `POST /v1/admin/tenants` returns 410. Add a customer in the cockpit
+(Organizations -> add org to app). The cockpit creates the org and the tenant, then
+provisions this app.
 
 ---
 
