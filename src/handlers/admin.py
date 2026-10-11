@@ -5,7 +5,7 @@ Thin wrapper around ajna_cloud SDK handlers. All auth enforcement,
 RBAC helpers, and handler logic lives in the SDK.
 
 Routes registered in src/app.py:
-  POST   /v1/admin/tenants
+  POST   /v1/admin/tenants          (410 Gone: customers are added in the cockpit)
   GET    /v1/admin/tenants
   GET    /v1/admin/tenants/{tenant_id}
   PUT    /v1/admin/tenants/{tenant_id}
@@ -17,6 +17,7 @@ Routes registered in src/app.py:
 import os
 from ajna_cloud import make_tenant_admin_handlers, make_rbac_handlers
 from ajna_cloud.cognito import CognitoProvisioner
+from ajna_cloud.http import respond
 
 from src.config.roles import ALL_ROLES, PLATFORM_ADMIN_ROLES, ORG_ADMIN_ROLES
 from src.config.tables import (
@@ -80,8 +81,25 @@ _tenant_admin = make_tenant_admin_handlers(
 
 _rbac = make_rbac_handlers()
 
-# Tenant management
-create_tenant = _tenant_admin.create_tenant
+TENANT_CREATE_GONE = (
+    "Tenants are not created by the app. Add the customer in the cockpit: "
+    "Organizations -> add org to app. The cockpit creates the org and the tenant, "
+    "then provisions this app."
+)
+
+
+def create_tenant(event, context):
+    """POST /v1/admin/tenants: disabled, always 410.
+
+    A tenant created here had no cockpit tenant row and no org, so the cockpit could
+    not see it and its login gate reported the tenant as 'unknown'. The cockpit's
+    "add org to app" is the only create path; it provisions this app through the
+    `_provision` Lambda event, not through this route (ajna-app-backend-template#13).
+    """
+    return respond(410, {"error": TENANT_CREATE_GONE, "status": "gone"}, event=event)
+
+
+# Tenant management (read, update and repair only; see create_tenant above)
 list_tenants = _tenant_admin.list_tenants
 get_tenant = _tenant_admin.get_tenant
 update_tenant = _tenant_admin.update_tenant
