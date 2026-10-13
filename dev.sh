@@ -759,8 +759,7 @@ cmd_start() {
   echo -e "${CYAN}── Dev login ──${NC}"
   echo "  UI       →  $(ui_local_url)"
   echo "  (open the tenant subdomain above — NOT plain localhost — so the app resolves your tenant)"
-  echo "  Email    →  dev@ajna.cloud"
-  echo "  Password →  \$AjnaDev@2026\$   (shared dev admin)"
+  echo "  Login    →  your own dev Cognito user (team password manager)"
   echo ""
 
   # Auto-run db setup only the first time (no setup marker yet). cmd_db_setup creates the
@@ -872,12 +871,19 @@ cmd_db_setup() {
     warn "curl not found — run manually: curl -X POST $url"
     return
   fi
-  # Authenticate with the shared dev admin to get a Bearer token.
-  local token
-  token=$(curl -s -X POST "$login_url" \
-    -H "Content-Type: application/json" \
-    -d '{"username":"dev@ajna.cloud","password":"$AjnaDev@2026$"}' \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null)
+  # Authenticate with your own dev user (DEV_LOGIN_EMAIL / DEV_LOGIN_PASSWORD in .env
+  # or the environment) to get a Bearer token. No login is ever stored in this repo.
+  local token="" dev_email dev_password
+  dev_email=${DEV_LOGIN_EMAIL:-$(grep "^DEV_LOGIN_EMAIL=" "$BACKEND_ENV" 2>/dev/null | head -1 | cut -d= -f2-)}
+  dev_password=${DEV_LOGIN_PASSWORD:-$(grep "^DEV_LOGIN_PASSWORD=" "$BACKEND_ENV" 2>/dev/null | head -1 | cut -d= -f2-)}
+  if [ -z "$dev_email" ] || [ -z "$dev_password" ]; then
+    warn "DEV_LOGIN_EMAIL / DEV_LOGIN_PASSWORD not set in .env — skipping login."
+  else
+    token=$(DEV_LOGIN_EMAIL="$dev_email" DEV_LOGIN_PASSWORD="$dev_password" python3 -c \
+        "import os,json; print(json.dumps({'username': os.environ['DEV_LOGIN_EMAIL'], 'password': os.environ['DEV_LOGIN_PASSWORD']}))" \
+      | curl -s -X POST "$login_url" -H "Content-Type: application/json" --data @- \
+      | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null)
+  fi
   if [ -z "$token" ]; then
     warn "Could not obtain auth token — calling setup without auth (will fail if auth is enforced)."
     curl -s -X POST "$url" "${tenant_header[@]}" | (command -v python3 &>/dev/null && python3 -m json.tool || cat)
