@@ -45,8 +45,10 @@ _crud = make_crud_handlers(
     default_write_roles=MASTER_DATA_WRITE_ROLES,
 )
 
+# COCKPIT_API_URL unset/empty = no cockpit: the handler reads tenant branding from the
+# app's own IbexDB table (local DB mode) instead of proxying to a cockpit.
 _tenant_config = make_tenant_config_handlers(
-    cockpit_url=settings.config.cockpit_api_url or 'https://cockpit-api.triviz.cloud',
+    cockpit_url=settings.config.cockpit_api_url,
     app_name='{{app-name}}',
 )
 

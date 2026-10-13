@@ -53,11 +53,13 @@ UI       →  http://localhost:5173
 API docs →  http://localhost:8000/docs
 ```
 
-Sign in at the UI with a dev Cognito user:
+Sign in at the UI with your own dev Cognito user. Get the login from the team
+password manager, or ask an admin to create a user for you in the dev Cognito pool.
+Never commit a login to this repo.
 
 | User | Password | Role |
 |------|----------|------|
-| `dev@ajna.cloud` | `$AjnaDev@2026$` | super_admin |
+| `<your-dev-email>` | `<your-dev-password>` | super_admin (or the role you need) |
 
 ### Commands
 
