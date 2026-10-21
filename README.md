@@ -154,7 +154,9 @@ README one level up for the full add-an-entity cycle.
 | `IBEX_API_URL` | IbexDB cluster URL |
 | `IBEX_API_KEY` | App-level dev key (works for all tenants of this app) |
 | `TENANT_ID` | Default/fallback tenant slug |
-| `DB_NAMESPACE` | IbexDB namespace (`default`) |
+| `DB_NAMESPACE` | IbexDB namespace (`default`); in per-app mode the SDK uses the app namespace instead |
+| `AJNA_DATA_AREA` | `per-app` — tenant data in `{tenant}_{app namespace}` (the default for new apps, same as the deployed app) |
+| `APP_NAME` | `{{app-name}}` — the cockpit app name; gives the per-app namespace |
 | `AUTH_MODE` | `cognito` |
 | `COGNITO_USER_POOL_ID` / `COGNITO_CLIENT_ID` / `COGNITO_REGION` | Cognito pool |
 | `APP_PREFIX` | `{{app-name}}` — resolves tenant from a user's Cognito group |
