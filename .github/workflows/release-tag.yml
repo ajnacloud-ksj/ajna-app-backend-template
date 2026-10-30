@@ -19,7 +19,12 @@ permissions:
 
 jobs:
   tag:
+    # Not in the platform canary's throwaway `canary*` repos: nothing reads their tags or
+    # releases (the cockpit merges the canary's promotion PR and prod builds from the `main`
+    # webhook), and 196 of them billed 715 min in 2026-10.
+    if: ${{ !startsWith(github.event.repository.name, 'canary') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:

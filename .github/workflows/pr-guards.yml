@@ -9,19 +9,50 @@
 # release notes come from labels, so nothing breaks without it. Link issues when the PR closes one.
 #
 # Untrusted input (title, labels) is only ever read via env vars — never interpolated into run:.
+#
+# WHY ONE JOB (#307). This was two jobs, which reads better in the checks UI and cost two full billed
+# minutes to run two `grep`s: Actions rounds EVERY JOB up to a minute, and these do no checkout and
+# touch no network, so both billed minutes were pure rounding — across ~50 repos, every PR event.
+# One job with two steps bills one. `if: always()` keeps the property that actually mattered about
+# separate jobs: you still see BOTH failures in one run, instead of fixing the title, pushing, and
+# only then learning the label is missing.
+#
+# WHY NO `synchronize` (#307). It re-ran both checks on every push to every PR branch, and neither
+# input can change on a push — a title edit fires `edited`, a label change fires `labeled`/`unlabeled`.
+# All it bought was re-billing the same answer on every commit of a review cycle.
+#
+# WHY CANARY REPOS SKIP IT. The platform canary generates throwaway `canary*` repos from the app
+# templates (196 of them in 2026-10, 715 billed minutes) and tears them down. Its promotion PRs are
+# opened and merged by the cockpit, which reads no check result (ajna-cockpit-backend canary.py), so
+# a guard there bills a minute and protects nothing. A skipped job bills nothing.
+#
+# MANAGED FILE — distributed by ajna-app-infra/scripts/ensure_pr_guards.py. Local edits are reverted
+# on the next daily board-maintenance run; change it there.
 ########################################################################################################
 name: pr guards
 
 on:
   pull_request:
-    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+    types: [opened, edited, reopened, labeled, unlabeled]
+
+# `edited` + `labeled` arrive in bursts while a PR is being set up; only the last state matters.
+concurrency:
+  group: pr-guards-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# Both checks read only the event payload; the token needs nothing beyond read.
+permissions:
+  contents: read
 
 jobs:
-  title:
-    name: Conventional PR title
+  pr-guards:
+    name: PR guards
+    if: ${{ !startsWith(github.event.repository.name, 'canary') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Title follows Conventional Commits
+        if: always()
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: |
@@ -32,11 +63,8 @@ jobs:
             exit 1
           fi
 
-  type-label:
-    name: Exactly one type label
-    runs-on: ubuntu-latest
-    steps:
       - name: PR carries one of feature/bug/tech-debt/docs/chore
+        if: always()
         env:
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         run: |
