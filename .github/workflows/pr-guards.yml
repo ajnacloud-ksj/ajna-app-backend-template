@@ -21,10 +21,12 @@
 # input can change on a push — a title edit fires `edited`, a label change fires `labeled`/`unlabeled`.
 # All it bought was re-billing the same answer on every commit of a review cycle.
 #
-# WHY CANARY REPOS SKIP IT. The platform canary generates throwaway `canary*` repos from the app
-# templates (196 of them in 2026-10, 715 billed minutes) and tears them down. Its promotion PRs are
-# opened and merged by the cockpit, which reads no check result (ajna-cockpit-backend canary.py), so
-# a guard there bills a minute and protects nothing. A skipped job bills nothing.
+# WHY CANARY REPOS SKIP IT. The platform canary generates throwaway `canary<digits>-*` repos from the
+# app templates (196 of them in 2026-10, 715 billed minutes) and tears them down. Its promotion PRs
+# are opened and merged by the cockpit, which reads no check result (ajna-cockpit-backend canary.py),
+# so a guard there bills a minute and protects nothing. A skipped job bills nothing.
+# The resident app `canaryresident-*` is NOT skipped: it is a real app on the monthly release train,
+# so it keeps its guards. GitHub expressions have no regex, hence the explicit `canaryresident` term.
 #
 # MANAGED FILE — distributed by ajna-app-infra/scripts/ensure_pr_guards.py. Local edits are reverted
 # on the next daily board-maintenance run; change it there.
@@ -47,7 +49,7 @@ permissions:
 jobs:
   pr-guards:
     name: PR guards
-    if: ${{ !startsWith(github.event.repository.name, 'canary') }}
+    if: ${{ !startsWith(github.event.repository.name, 'canary') || startsWith(github.event.repository.name, 'canaryresident') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
