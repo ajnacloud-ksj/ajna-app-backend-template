@@ -181,3 +181,4 @@ and bump `sdk-version` in `.github/workflows/deploy-backend.yml` to upgrade the 
 - **SDK not found** — clone it (see Prerequisites) or set `AJNA_SDK_PATH`.
 - **401 on data calls** — sign in first; the dev stack uses real Cognito auth.
 - **CORS errors** — leave `CORS_ALLOWED_ORIGINS` unset locally; the SDK reflects the UI origin.
+
