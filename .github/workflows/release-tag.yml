@@ -9,6 +9,15 @@ name: Tag prod release
 # with no human retyping anywhere. Direct pushes / other merges fall back to computing
 # the bump from Conventional Commits since the last tag.
 # `develop` is continuous and intentionally untagged — tags are a prod concept.
+#
+# RUNNER (ajna-app-infra#1037). When the repo's Actions variable CI_ON_CODEBUILD is 'true', the job
+# runs on the repo's CodeBuild-hosted runner `ajna-gha-runner-dev-<repo>` (ARM, 2 vCPU, logs-only
+# role; ajna-app-infra gha_runner.py). Otherwise, and in every public repo, it runs on
+# ubuntu-latest. Delete the variable to move a repo back. The run shell drops the build's
+# container credentials (`env -u`), with the same bash flags as GitHub's default shell.
+#
+# MANAGED FILE — the canonical copy is ajna-app-infra/managed_workflows.py (the app templates carry
+# the same bytes). scripts/fanout_workflow_prs.py opens the pull requests that update a repo.
 on:
   push:
     branches: [main]
@@ -25,8 +34,13 @@ jobs:
     # keeps its release tags: it is a real app on the monthly release train. (No regex in
     # GitHub expressions, hence the explicit `canaryresident` term.)
     if: ${{ !startsWith(github.event.repository.name, 'canary') || startsWith(github.event.repository.name, 'canaryresident') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_ON_CODEBUILD == 'true' && fromJSON(format('["codebuild-ajna-gha-runner-dev-{0}-{1}-{2}","image:arm-3.0","instance-size:small"]', github.event.repository.name, github.run_id, github.run_attempt)) || 'ubuntu-latest' }}
     timeout-minutes: 5
+    env:
+      AWS_EC2_METADATA_DISABLED: "true"
+    defaults:
+      run:
+        shell: env -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI -u AWS_CONTAINER_CREDENTIALS_FULL_URI bash -e {0}
     steps:
       - uses: actions/checkout@v4
         with:
