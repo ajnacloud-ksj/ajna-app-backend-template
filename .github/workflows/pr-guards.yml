@@ -8,11 +8,18 @@
 # Issue linking (Closes #N) is deliberately NOT enforced — the boards track PRs directly and the
 # release notes come from labels, so nothing breaks without it. Link issues when the PR closes one.
 #
-# Untrusted input (title, labels) is only ever read via env vars — never interpolated into run:.
+# Untrusted input (title, labels) is only ever read from the API into files — never interpolated
+# into run:.
+#
+# WHY THE CURRENT STATE, NOT THE EVENT PAYLOAD (ajna-app-infra#1037). Runs of one PR queue instead
+# of cancelling each other (see `concurrency`), so an older run can finish after a newer event. Its
+# payload would then judge an OLDER title or label set. So the first step reads the PR's current
+# title and labels (GET /repos/{repo}/pulls/{n}, GITHUB_TOKEN with pull-requests: read), and both
+# checks judge that. A read that fails (HTTP error, empty or unparseable body) fails the guard.
 #
 # WHY ONE JOB (#307). This was two jobs, which reads better in the checks UI and cost two full billed
 # minutes to run two `grep`s: Actions rounds EVERY JOB up to a minute, and these do no checkout and
-# touch no network, so both billed minutes were pure rounding — across ~50 repos, every PR event.
+# make one small API read, so both billed minutes were pure rounding — across ~50 repos, every PR event.
 # One job with two steps bills one. `if: always()` keeps the property that actually mattered about
 # separate jobs: you still see BOTH failures in one run, instead of fixing the title, pushing, and
 # only then learning the label is missing.
@@ -45,14 +52,20 @@ on:
   pull_request:
     types: [opened, edited, reopened, labeled, unlabeled]
 
-# `edited` + `labeled` arrive in bursts while a PR is being set up; only the last state matters.
+# `edited` + `labeled` arrive in bursts while a PR is being set up. One run at a time per PR: a newer
+# event replaces a PENDING run (its job was never queued, so no runner starts) but never cancels a
+# RUNNING one. WHY NOT cancel-in-progress (ajna-app-infra#1037): a cancelled job's CodeBuild runner
+# build is STOPPED, and CodeBuild then posts "Build stopped" as a FAILED commit status on the PR,
+# although the runner projects have reportBuildStatus=False (fan-out, 2026-10-31). GitHub's
+# rollup (the merge box) counts the LATEST run per check name, and queued runs finish in order.
 concurrency:
   group: pr-guards-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
-# Both checks read only the event payload; the token needs nothing beyond read.
+# Read only: contents for the checkout-free job, pull-requests to read the PR's current state.
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   pr-guards:
@@ -67,11 +80,46 @@ jobs:
       run:
         shell: env -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI -u AWS_CONTAINER_CREDENTIALS_FULL_URI bash -e {0}
     steps:
+      - name: Read the PR's current title and labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          API_URL: ${{ github.api_url }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          rm -f "$RUNNER_TEMP/pr-title" "$RUNNER_TEMP/pr-labels"
+          python3 - <<'PY'
+          import json, os, sys, urllib.request
+          tmp = os.environ["RUNNER_TEMP"]
+          url = "%s/repos/%s/pulls/%s" % (os.environ["API_URL"], os.environ["REPO"], os.environ["NUMBER"])
+          req = urllib.request.Request(url, headers={
+              "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+              "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
+          try:
+              with urllib.request.urlopen(req, timeout=20) as resp:
+                  status, pr = resp.status, json.loads(resp.read())
+              title, labels = pr["title"], [label["name"] for label in pr["labels"]]
+              if status != 200 or not isinstance(title, str) or not title.strip():
+                  raise ValueError("no title (HTTP %s)" % status)
+              if not all(isinstance(name, str) for name in labels):
+                  raise ValueError("a label without a name")
+          except Exception as exc:
+              print("::error::Could not read this PR's current title and labels: %r" % (exc,))
+              sys.exit(1)
+          with open(os.path.join(tmp, "pr-title"), "w") as f:
+              f.write(title)
+          with open(os.path.join(tmp, "pr-labels"), "w") as f:
+              f.write(" ".join(labels))
+          PY
+
       - name: Title follows Conventional Commits
         if: always()
-        env:
-          TITLE: ${{ github.event.pull_request.title }}
         run: |
+          if [ ! -f "$RUNNER_TEMP/pr-title" ]; then
+            echo "::error::The PR's current title could not be read (see the first step)."
+            exit 1
+          fi
+          TITLE=$(cat "$RUNNER_TEMP/pr-title")
           if printf '%s' "$TITLE" | grep -qE '^(feat|fix|chore|docs|refactor|test|ci|perf|build|style|release|revert)(\([^)]+\))?!?: .+'; then
             echo "ok: $TITLE"
           else
@@ -81,9 +129,12 @@ jobs:
 
       - name: PR carries one of feature/bug/tech-debt/docs/chore
         if: always()
-        env:
-          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         run: |
+          if [ ! -f "$RUNNER_TEMP/pr-labels" ]; then
+            echo "::error::The PR's current labels could not be read (see the first step)."
+            exit 1
+          fi
+          LABELS=$(cat "$RUNNER_TEMP/pr-labels")
           count=0
           for l in $LABELS; do
             case "$l" in feature|bug|tech-debt|docs|chore) count=$((count+1));; esac
