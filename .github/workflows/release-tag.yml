@@ -97,3 +97,28 @@ jobs:
           else
             echo "no open milestone named $V (fine — nothing to close)"
           fi
+      - name: Fast-forward develop to this release
+        # A promotion merge leaves `develop` one merge commit behind `main`. Fast-forward it, so
+        # the two are equal again and no back-merge commit is ever needed (ajna-app-infra#1247).
+        # Fast-forward only: a push that is not one is rejected, and when `develop` already has
+        # new work nothing is pushed. Every way this can fail is a warning, never a red release:
+        # the tag is already cut, and the branch-sync sweep back-merges what is left.
+        # `!cancelled()`: a tag or milestone failure must not leave develop behind as well.
+        if: ${{ !cancelled() }}
+        run: |
+          if ! git ls-remote --exit-code --heads origin develop >/dev/null; then
+            echo "no develop branch — nothing to fast-forward"; exit 0
+          fi
+          git fetch -q origin develop
+          dev=$(git rev-parse FETCH_HEAD)
+          if [ "$dev" = "$GITHUB_SHA" ]; then
+            echo "develop is already at $GITHUB_SHA"
+          elif git merge-base --is-ancestor "$dev" "$GITHUB_SHA"; then
+            if git push origin "$GITHUB_SHA:refs/heads/develop"; then
+              echo "develop fast-forwarded to $GITHUB_SHA"
+            else
+              echo "::warning::the fast-forward push of develop was rejected (develop moved, or no permission); the branch-sync sweep will back-merge"
+            fi
+          else
+            echo "::warning::develop has commits that main lacks, so it was not fast-forwarded; back-merge main into develop"
+          fi
