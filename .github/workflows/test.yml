@@ -1,96 +1,137 @@
 name: Tests
 
-# Runs the template's pytest suite against the SDK that apps actually deploy with. Before this
-# workflow the template had no test CI, so its tests broke silently as the SDK moved on.
+# Runs ci/test.sh (the backend pytest suite) on every pull request into the app's working
+# branches. THE FLEET REFERENCE: every app generated from this template gets this file, and
+# existing apps copy it (first: plant-manager-backend#236).
 #
-# HOW THE SDK GETS HERE. ajna-cloud is private and is not on PyPI. The job runs INSIDE the shared
-# Lambda base image, ghcr.io/ajnacloud-ksj/ajna-lambda-base:py312-<SDK version>, the ghcr mirror
-# that local dev (docker-compose.local.yml, dev.sh) already pulls with a GitHub token. The image
-# carries ajna-cloud plus its pinned common deps (python-jose[cryptography], boto3, requests, ...),
-# the same bytes the Dockerfile builds on, so CI tests the SDK the app ships with. Only
-# requirements-dev.txt (pytest, httpx, fastapi, ...) is installed on top, from PyPI.
-#   - Bump SDK_BASE_TAG together with BASE_IMAGE in docker-compose.local.yml (same tag).
-#   - The image is linux/arm64 only (Lambda is arm64), hence the ARM runner.
-#   - Pull auth is this run's GITHUB_TOKEN (packages: read). The private package must grant this
-#     repository Actions read access (package settings > Manage Actions access). Without it the
-#     "Initialize containers" step fails with "denied" — that is a package setting, not a code fix.
+# PRIVATE REPOS ONLY. The job runs only when the repository is private (`if:` below), so it never
+# runs in this public template repository itself:
+#   - a self-hosted (CodeBuild) runner must never take a public repo's jobs, and the CodeBuild
+#     runner and CodeArtifact read lists in ajna-app-infra hold private repos only;
+#   - a public repo cannot use the private codebuild-guard action
+#     (ajna-github-workflows README, "Your own jobs").
+# Generated apps are private, so in an app the job runs with no edit.
 #
-# RUNNER. This repo is public, so it runs on a GitHub-hosted runner (free for public repos), not
-# the CodeBuild runner (`CI_ON_CODEBUILD`): a self-hosted runner must never take public-repo jobs,
-# and the private codebuild-guard action cannot be used from a public repo
-# (ajna-github-workflows README, "Your own jobs"). No AWS credentials exist in this job; the tests
-# mock boto3 and the Cognito JWKS fetch.
+# ADVISORY CHECK. The org is on GitHub Free: branch protection / required status checks are not
+# available for private repos. A red run does not block a merge by itself; reviewers must not
+# merge on red.
 #
-# GENERATED APPS. This repo is a GitHub template, so every app generated from it gets this file.
-# The job is limited to the template repository itself; an app opts in by deleting the
-# `github.repository ==` condition below (and by granting its repo read access to the package).
+# RUNNER (ajna-app-infra #1037, gha_runner.py). The job runs on this repo's CodeBuild-hosted
+# runner project `ajna-gha-runner-dev-<repo>` (AWS account 808527335982, ap-south-1) when the
+# repo variable CI_ON_CODEBUILD is 'true' (set by the ghrunner-dev stack): one ephemeral build
+# per job, ARM Amazon Linux 2023 standard 3.0, `instance-size:small` (the suite runs in seconds,
+# in one process). No Docker: the runner project is unprivileged.
+#
+# CODEARTIFACT, AND ONLY CODEARTIFACT, FOR ajna-cloud. The suite needs the private base SDK
+# `ajna-cloud`, which is NOT on public PyPI and must never come from it (dependency confusion).
+# This repo's runner role may read the CodeArtifact repository ajna/ajna-pypi and nothing else
+# (ghRunnerCodeArtifactReadRepos, ajna-app-infra). The FIRST step, before the checkout, is the
+# only step that uses the runner credentials: it gets a 15-minute read token and passes the
+# index URL, masked, as a step output to the test step only. ci/test.sh installs ajna-cloud from
+# that index with --no-deps, unsets the URL, and fails unless ajna-cloud came from the
+# CodeArtifact host, is installed in its own venv, and has the version of the SDK source below.
+# No other index is ever given for it. On a GitHub-hosted runner (CI_ON_CODEBUILD not 'true')
+# there are no credentials: the job fails at the first step on purpose.
+#
+# ONE SDK VERSION SOURCE. No SDK version is written in this file. ci/test.sh reads it from
+# BASE_IMAGE in docker-compose.local.yml (`ajna-lambda-base:py312-X.Y.Z`), the one place in this
+# repo that the SDK fleet bump edits.
+#
+# NO RUNNER CREDENTIALS IN THE OTHER STEPS. Every other `run:` step runs in a shell started
+# under `env -u` for both container credential variables (job `defaults.run.shell`), and the job
+# sets AWS_EC2_METADATA_DISABLED=true. The dummy `testing` keys keep boto3 offline.
+#
+# NO GITHUB CACHE ON THE CODEBUILD RUNNER (ajna-app-infra #1107): no actions/cache, no
+# setup-python cache. pyenv's Python 3.12 from the image.
+#
+# SAME-REPO CODE ONLY. The job runs only when the pull request's head is in this repository: a
+# fork pull request never reaches the self-hosted runner (the codebuild-guard step also fails
+# closed).
 on:
-  push:
-    branches: [main, integration-main, develop]
   pull_request:
-    branches: [main, integration-main, develop, "feature/**"]
+    branches: [integration-develop, develop, integration-main, main]
   workflow_dispatch:
 
 permissions:
   contents: read
-  packages: read   # pull the private ajna-lambda-base image from ghcr
 
+# A new commit on a PR cancels that PR's older run. A dispatch run has its own group (run_id), so
+# it is never cancelled or queued (ajna-app-infra#1264). On the CodeBuild runner nothing is
+# cancelled: a stopped runner build posts a FAILED "Build stopped" commit status (#1037), so
+# there a newer run replaces only a PENDING one.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
-
-env:
-  SDK_BASE_TAG: py312-2.4.1
+  cancel-in-progress: ${{ vars.CI_ON_CODEBUILD != 'true' }}
 
 jobs:
-  pytest:
-    # Template repo only (see GENERATED APPS), and same-repo code only: a fork pull request gets a
-    # read-only token that cannot pull the private base image.
+  tests:
+    # Private repos only (see PRIVATE REPOS ONLY), and same-repo code only (SAME-REPO CODE ONLY).
     if: >-
-      github.repository == 'ajnacloud-ksj/ajna-app-backend-template' &&
+      github.event.repository.private &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 15
-    container:
-      image: ghcr.io/ajnacloud-ksj/ajna-lambda-base:py312-2.4.1   # keep equal to env.SDK_BASE_TAG
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-      env:
-        AWS_EC2_METADATA_DISABLED: "true"
-        AWS_DEFAULT_REGION: ap-south-1
-        AWS_ACCESS_KEY_ID: testing
-        AWS_SECRET_ACCESS_KEY: testing
-        PIP_ROOT_USER_ACTION: ignore
-        PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    runs-on: ${{ vars.CI_ON_CODEBUILD == 'true' && fromJSON(format('["codebuild-ajna-gha-runner-dev-{0}-{1}-{2}","image:arm-3.0","instance-size:small"]', github.event.repository.name, github.run_id, github.run_attempt)) || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    # NO RUNNER CREDENTIALS (top of the file); the CodeArtifact step overrides this on purpose.
+    defaults:
+      run:
+        shell: env -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI -u AWS_CONTAINER_CREDENTIALS_FULL_URI bash --noprofile --norc -eo pipefail {0}
+    env:
+      AWS_EC2_METADATA_DISABLED: "true"
+      CA_DOMAIN: ajna
+      CA_DOMAIN_OWNER: "808527335982"
+      CA_REPO: ajna-pypi
+      CA_REGION: ap-south-1
     steps:
+      # No-op on a GitHub-hosted runner; fails closed for a fork pull request on CodeBuild.
+      - uses: ajnacloud-ksj/ajna-github-workflows/.github/actions/codebuild-guard@d946f95c269cea0379b76bfb5e874b6bf9d23b6e
+
+      - name: CodeArtifact index (the only step with runner credentials)
+        id: ca
+        # Before the checkout: no code from the repository runs with the credentials.
+        # AWS_EC2_METADATA_DISABLED does not stop the container credentials endpoint.
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          if [ -z "${AWS_CONTAINER_CREDENTIALS_RELATIVE_URI:-}${AWS_CONTAINER_CREDENTIALS_FULL_URI:-}" ]; then
+            echo "::error::No runner credentials: this job needs the CodeBuild runner (CI_ON_CODEBUILD=true) to read ajna-cloud from CodeArtifact"
+            exit 1
+          fi
+          token="$(aws codeartifact get-authorization-token --domain "$CA_DOMAIN" --domain-owner "$CA_DOMAIN_OWNER" \
+            --region "$CA_REGION" --duration-seconds 900 --query authorizationToken --output text)"
+          echo "::add-mask::$token"
+          endpoint="$(aws codeartifact get-repository-endpoint --domain "$CA_DOMAIN" --domain-owner "$CA_DOMAIN_OWNER" \
+            --repository "$CA_REPO" --format pypi --region "$CA_REGION" --query repositoryEndpoint --output text)"
+          url="https://aws:${token}@${endpoint#https://}simple/"
+          echo "::add-mask::$url"
+          echo "index_url=$url" >> "$GITHUB_OUTPUT"
+          echo "CodeArtifact index: ${endpoint}simple/ (token masked, 15 minutes)"
+
       - uses: actions/checkout@v4
 
-      - name: SDK in the image matches SDK_BASE_TAG
+      - name: Runner credentials are stripped
         run: |
-          installed="$(python -c 'from importlib.metadata import version; print(version("ajna-cloud"))')"
-          expected="${SDK_BASE_TAG#py312-}"
-          echo "ajna-cloud ${installed} (expected ${expected}), $(python --version), $(uname -m)"
-          test "$installed" = "$expected"
+          test -z "${AWS_CONTAINER_CREDENTIALS_RELATIVE_URI:-}"
+          test -z "${AWS_CONTAINER_CREDENTIALS_FULL_URI:-}"
+          test "${AWS_EC2_METADATA_DISABLED:-}" = "true"
+          echo creds-stripped
 
-      - name: Install test dependencies
-        run: python -m pip install -q -r requirements-dev.txt
-
-      - name: Pytest
-        run: python -m pytest tests -rs -p no:cacheprovider --junitxml=pytest-report.xml
-
-      - name: No skipped tests
-        # Every test in this suite runs without external services, so a skip means something is
-        # missing from the environment. Fail rather than pass with fewer tests.
-        if: always()
+      - name: Python 3.12 (CodeBuild image, pyenv)
+        # The ARM standard 3.0 image names the exact 3.12 version in PYTHON_312_VERSION.
         run: |
-          python - <<'PY'
-          import sys
-          import xml.etree.ElementTree as ET
+          if [ -z "${PYTHON_312_VERSION:-}" ]; then
+            echo "::error::PYTHON_312_VERSION is not set on this runner image"
+            exit 1
+          fi
+          pyenv global "$PYTHON_312_VERSION"
+          echo "$(pyenv prefix "$PYTHON_312_VERSION")/bin" >> "$GITHUB_PATH"
+          echo "PYTHON_312_VERSION=$PYTHON_312_VERSION arch=$(uname -m)"
 
-          root = ET.parse("pytest-report.xml").getroot()
-          suites = [root] if root.tag == "testsuite" else list(root)
-          totals = {k: sum(int(s.get(k, 0)) for s in suites) for k in ("tests", "failures", "errors", "skipped")}
-          print(totals)
-          sys.exit(1 if totals["tests"] == 0 or totals["skipped"] else 0)
-          PY
+      - name: ci/test.sh
+        env:
+          CA_INDEX_URL: ${{ steps.ca.outputs.index_url }}
+          # Dummy AWS settings: the tests must never reach a real account.
+          AWS_DEFAULT_REGION: ap-south-1
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+        run: |
+          python --version
+          ci/test.sh

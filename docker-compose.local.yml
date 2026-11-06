@@ -22,7 +22,8 @@ services:
         # single SDK-version lever. dev.sh reads THIS value for the ghcr login.
         # Keep it at or above the cockpit's DEFAULT_BASE_IMAGE_TAG (what a new app deploys
         # on); src/app.py needs >= 1.53.1 for AuthHandlers.auth_routes().
-        # Keep equal to SDK_BASE_TAG in .github/workflows/test.yml, so CI tests this SDK.
+        # THE ONE SDK VERSION SOURCE in this repo: the SDK fleet bump edits this line. ci/test.sh
+        # (the CI test job) reads the SDK version from it, and dev.sh reads the image from it.
         BASE_IMAGE: ghcr.io/ajnacloud-ksj/ajna-lambda-base:py312-2.4.1
     # The dev stage's CMD already runs uvicorn --reload; no entrypoint/command override needed.
     ports:
