@@ -16,3 +16,21 @@ target-version = "py312"
 [tool.black]
 line-length = 120
 target-version = ["py312"]
+
+[tool.pyright]
+# The ajna-cloud SDK is only ever installed INSIDE the container
+# (`pip install -e /ajna-cloud-sdk` at container start), never in a host venv.
+# Without extraPaths, every `from ajna_cloud import ...` reports an unresolved
+# import on the host and the noise buries real type errors.
+#
+# Paths are relative to this file and several are listed because app checkout
+# layouts differ; pyright ignores the ones that do not exist. Override with
+# AJNA_SDK_PATH-style absolute paths if your layout is unusual.
+extraPaths = [
+    "../../ibex/ajna-cloud-sdk",  # <root>/<app>/<app>-backend  (dev.sh default)
+    "../ibex/ajna-cloud-sdk",     # <root>/<app>-backend
+    "../ajna-cloud-sdk",          # SDK cloned as a sibling
+]
+include = ["src", "tests"]
+pythonVersion = "3.12"            # match the Lambda runtime, not the host python
+typeCheckingMode = "basic"
