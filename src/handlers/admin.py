@@ -16,7 +16,8 @@ Routes registered in src/app.py:
 """
 import os
 from ajna_cloud import make_tenant_admin_handlers, make_rbac_handlers
-from ajna_cloud.cognito import CognitoProvisioner
+from ajna_cloud.ports import user_admin
+from ajna_cloud.user_provisioning import TenantUserProvisioner
 from ajna_cloud.http import respond
 
 from src.config.roles import ALL_ROLES, PLATFORM_ADMIN_ROLES, ORG_ADMIN_ROLES
@@ -28,7 +29,6 @@ from src.config.tables import (
 _NS = os.environ.get("DB_NAMESPACE", "api")
 
 # No default fallback — COGNITO_USER_POOL_ID must be set when AUTH_MODE=cognito.
-COGNITO_REGION = os.environ.get("COGNITO_REGION", "ap-south-1")
 APP_PREFIX = os.environ.get("APP_PREFIX", "{{app-name}}")
 COGNITO_ROLES = ALL_ROLES
 
@@ -57,14 +57,16 @@ DEFAULT_ROLES = [
      "table_access": _grants(_USER_ACCESS),  "column_mask": {}, "row_filters": [], "is_default": True},
 ]
 
-_cognito_provisioner: CognitoProvisioner | None = None
+# Tenant groups and admin users go through the SDK user-admin brick (Cognito on Ajna
+# Cloud, Microsoft Graph or Keycloak elsewhere). The brick reads its own settings, so
+# the app carries no provider and no AWS region.
+_cognito_provisioner: TenantUserProvisioner | None = None
 
-if os.environ.get("AUTH_MODE", "local").lower() == "cognito":
-    _cognito_provisioner = CognitoProvisioner(
-        user_pool_id=os.environ["COGNITO_USER_POOL_ID"],
+if os.environ.get("AUTH_MODE", "local").lower() != "local":
+    _cognito_provisioner = TenantUserProvisioner(
+        user_admin.provider(),
         app_prefix=APP_PREFIX,
         roles=COGNITO_ROLES,
-        region=COGNITO_REGION,
     )
 
 _tenant_admin = make_tenant_admin_handlers(
