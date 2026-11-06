@@ -9,7 +9,7 @@ name: Tests
 # carries ajna-cloud plus its pinned common deps (python-jose[cryptography], boto3, requests, ...),
 # the same bytes the Dockerfile builds on, so CI tests the SDK the app ships with. Only
 # requirements-dev.txt (pytest, httpx, fastapi, ...) is installed on top, from PyPI.
-#   - Bump SDK_BASE_TAG together with the base image tag the template deploys with.
+#   - Bump SDK_BASE_TAG together with BASE_IMAGE in docker-compose.local.yml (same tag).
 #   - The image is linux/arm64 only (Lambda is arm64), hence the ARM runner.
 #   - Pull auth is this run's GITHUB_TOKEN (packages: read). The private package must grant this
 #     repository Actions read access (package settings > Manage Actions access). Without it the
