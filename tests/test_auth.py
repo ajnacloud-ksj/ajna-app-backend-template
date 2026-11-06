@@ -105,3 +105,29 @@ def test_me_rejects_invalid_token():
     with mock_cognito_login():
         resp = me(event(method="GET", headers={"Authorization": "Bearer invalid.token.here"}), {})
     assert resp["statusCode"] == 401
+
+
+def test_me_rejects_token_not_signed_by_the_pool():
+    """/me must verify the signature: a well-formed token with valid-looking claims,
+    signed by a key that is not in the pool's JWKS, is a forgery and gets 401."""
+    import time
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from jose import jwt as jose_jwt
+    from tests.conftest import APP_PREFIX, _TEST_ISSUER, _TEST_KID
+
+    other_key = rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption(),
+    ).decode()
+    now = int(time.time())
+    forged = jose_jwt.encode(
+        {
+            "iss": _TEST_ISSUER, "iat": now, "exp": now + 3600, "sub": "attacker",
+            "token_use": "access", "client_id": "test-client-id",
+            "cognito:groups": [f"{APP_PREFIX}-acme-super_admin"],
+        },
+        other_key, algorithm="RS256", headers={"kid": _TEST_KID},
+    )
+    with mock_cognito_login():
+        resp = me(event(method="GET", headers={"Authorization": f"Bearer {forged}"}), {})
+    assert resp["statusCode"] == 401
