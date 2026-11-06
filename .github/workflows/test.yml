@@ -1,0 +1,96 @@
+name: Tests
+
+# Runs the template's pytest suite against the SDK that apps actually deploy with. Before this
+# workflow the template had no test CI, so its tests broke silently as the SDK moved on.
+#
+# HOW THE SDK GETS HERE. ajna-cloud is private and is not on PyPI. The job runs INSIDE the shared
+# Lambda base image, ghcr.io/ajnacloud-ksj/ajna-lambda-base:py312-<SDK version>, the ghcr mirror
+# that local dev (docker-compose.local.yml, dev.sh) already pulls with a GitHub token. The image
+# carries ajna-cloud plus its pinned common deps (python-jose[cryptography], boto3, requests, ...),
+# the same bytes the Dockerfile builds on, so CI tests the SDK the app ships with. Only
+# requirements-dev.txt (pytest, httpx, fastapi, ...) is installed on top, from PyPI.
+#   - Bump SDK_BASE_TAG together with the base image tag the template deploys with.
+#   - The image is linux/arm64 only (Lambda is arm64), hence the ARM runner.
+#   - Pull auth is this run's GITHUB_TOKEN (packages: read). The private package must grant this
+#     repository Actions read access (package settings > Manage Actions access). Without it the
+#     "Initialize containers" step fails with "denied" — that is a package setting, not a code fix.
+#
+# RUNNER. This repo is public, so it runs on a GitHub-hosted runner (free for public repos), not
+# the CodeBuild runner (`CI_ON_CODEBUILD`): a self-hosted runner must never take public-repo jobs,
+# and the private codebuild-guard action cannot be used from a public repo
+# (ajna-github-workflows README, "Your own jobs"). No AWS credentials exist in this job; the tests
+# mock boto3 and the Cognito JWKS fetch.
+#
+# GENERATED APPS. This repo is a GitHub template, so every app generated from it gets this file.
+# The job is limited to the template repository itself; an app opts in by deleting the
+# `github.repository ==` condition below (and by granting its repo read access to the package).
+on:
+  push:
+    branches: [main, integration-main, develop]
+  pull_request:
+    branches: [main, integration-main, develop, "feature/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read   # pull the private ajna-lambda-base image from ghcr
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  SDK_BASE_TAG: py312-2.4.1
+
+jobs:
+  pytest:
+    # Template repo only (see GENERATED APPS), and same-repo code only: a fork pull request gets a
+    # read-only token that cannot pull the private base image.
+    if: >-
+      github.repository == 'ajnacloud-ksj/ajna-app-backend-template' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/ajnacloud-ksj/ajna-lambda-base:py312-2.4.1   # keep equal to env.SDK_BASE_TAG
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      env:
+        AWS_EC2_METADATA_DISABLED: "true"
+        AWS_DEFAULT_REGION: ap-south-1
+        AWS_ACCESS_KEY_ID: testing
+        AWS_SECRET_ACCESS_KEY: testing
+        PIP_ROOT_USER_ACTION: ignore
+        PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: SDK in the image matches SDK_BASE_TAG
+        run: |
+          installed="$(python -c 'from importlib.metadata import version; print(version("ajna-cloud"))')"
+          expected="${SDK_BASE_TAG#py312-}"
+          echo "ajna-cloud ${installed} (expected ${expected}), $(python --version), $(uname -m)"
+          test "$installed" = "$expected"
+
+      - name: Install test dependencies
+        run: python -m pip install -q -r requirements-dev.txt
+
+      - name: Pytest
+        run: python -m pytest tests -rs -p no:cacheprovider --junitxml=pytest-report.xml
+
+      - name: No skipped tests
+        # Every test in this suite runs without external services, so a skip means something is
+        # missing from the environment. Fail rather than pass with fewer tests.
+        if: always()
+        run: |
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse("pytest-report.xml").getroot()
+          suites = [root] if root.tag == "testsuite" else list(root)
+          totals = {k: sum(int(s.get(k, 0)) for s in suites) for k in ("tests", "failures", "errors", "skipped")}
+          print(totals)
+          sys.exit(1 if totals["tests"] == 0 or totals["skipped"] else 0)
+          PY
