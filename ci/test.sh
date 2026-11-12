@@ -15,9 +15,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${CA_INDEX_URL:?CA_INDEX_URL (CodeArtifact pypi index) is required}"
-# Ignore any pip config file (a developer machine may point pip at an old CodeArtifact token):
-# ajna-cloud gets its index on the command line below, and everything else comes from PyPI.
+# Ignore any pip config file (a developer machine may point pip at an old CodeArtifact token)
+# and any extra index from the environment (with an extra index, pip takes the highest version
+# from EITHER index, so a public ajna-cloud could win): ajna-cloud gets its index on the command
+# line below, and everything else comes from PyPI.
 export PIP_CONFIG_FILE=/dev/null
+unset PIP_EXTRA_INDEX_URL
 
 SDK_SOURCE="docker-compose.local.yml"
 TAG="$(awk '/BASE_IMAGE:[[:space:]]*[^[:space:]]*ajna-lambda-base:/{print $2; exit}' "$SDK_SOURCE")"
