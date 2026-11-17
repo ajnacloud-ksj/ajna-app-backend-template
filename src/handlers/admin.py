@@ -16,6 +16,7 @@ Routes registered in src/app.py:
 """
 import os
 from ajna_cloud import make_tenant_admin_handlers, make_rbac_handlers
+from ajna_cloud.data_area import grant_namespace
 from ajna_cloud.ports import user_admin
 from ajna_cloud.user_provisioning import TenantUserProvisioner
 from ajna_cloud.http import respond
@@ -34,8 +35,13 @@ COGNITO_ROLES = ALL_ROLES
 
 
 def _grants(access_by_table: dict) -> dict:
-    """{'items': 'rw', ...} -> {'ibex:{ns}.app_items': 'rw', ...}."""
-    return {f"ibex:{_NS}.{physical(t)}": access for t, access in access_by_table.items()}
+    """{'items': 'rw', ...} -> {'ibex:{ns}.app_items': 'rw', ...}.
+
+    ``ns`` is the SDK's grant namespace, so the keys follow the effective data area: in
+    per-app mode (``AJNA_DATA_AREA=per-app``) a shared ``_NS`` (``default``/``api``) becomes
+    the app namespace. Do not use ``_NS`` directly here: it bypasses that rewrite."""
+    ns = grant_namespace(_NS)
+    return {f"ibex:{ns}.{physical(t)}": access for t, access in access_by_table.items()}
 
 
 # Per-tier table access (logical table name -> 'r' | 'rw'). One place to edit grants.
