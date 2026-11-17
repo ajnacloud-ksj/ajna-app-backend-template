@@ -23,6 +23,11 @@ os.environ["AUTH_MODE"] = "cognito"
 os.environ.setdefault("COGNITO_REGION", "ap-south-1")
 os.environ.setdefault("COGNITO_CLIENT_ID", "test-client-id")
 os.environ.setdefault("COGNITO_USER_POOL_ID", "test-pool-id")
+# Every deployed app has APP_PREFIX (the Pulumi AppStack injects it), and both the
+# app (src/handlers/auth.py) and the SDK's Cognito provider read it. Pin it here so
+# the tests build Cognito group names from the same value the code parses them with.
+os.environ.setdefault("APP_PREFIX", "{{app-name}}")
+APP_PREFIX = os.environ["APP_PREFIX"]
 
 # ── Fake IbexDB ────────────────────────────────────────────────────────────────
 
@@ -134,23 +139,61 @@ _COGNITO_USERS = {
 _VALID_PASSWORD = "password123"
 
 
+# A test RSA key pair stands in for the Cognito user pool's signing key. /v1/auth/me
+# VERIFIES the bearer token (signature, issuer, expiry, client_id) through the SDK's
+# CognitoAuthProvider, so the tokens must be real RS256 JWTs that the pool's JWKS
+# (served by the patched requests.get below) can verify.
+_TEST_KID = "test-kid"
+_TEST_ISSUER = (
+    f"https://cognito-idp.{os.environ['COGNITO_REGION']}.amazonaws.com/"
+    f"{os.environ['COGNITO_USER_POOL_ID']}"
+)
+_TEST_JWKS_URL = f"{_TEST_ISSUER}/.well-known/jwks.json"
+
+
+def _make_test_signing_key():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from jose import jwk
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem = private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    public_pem = private_key.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+    public_jwk = {**jwk.construct(public_pem, "RS256").to_dict(), "kid": _TEST_KID, "use": "sig"}
+    return private_pem, {"keys": [public_jwk]}
+
+
+_TEST_PRIVATE_PEM, _TEST_JWKS = _make_test_signing_key()
+
+
 @contextmanager
 def mock_cognito_login():
     """
-    Patches boto3 so the SDK's Cognito auth path works without a real pool.
+    Patches boto3 and the JWKS fetch so the SDK's Cognito auth path works without a real pool.
 
-    The SDK (ajna_cloud.handlers.auth) decodes the Cognito AccessToken/IdToken
-    with jose and derives role+tenant from the ``cognito:groups`` claim, which
-    Cockpit provisions in the form ``{app_prefix}-{tenant_id}-{role}`` (app_prefix
-    defaults to '{{app-name}}'). So the mock must return real, decodable JWTs whose
-    AccessToken carries the right group — not a hand-rolled token with a bare role.
+    Login (ajna_cloud.handlers.auth) reads role+tenant from the ``cognito:groups``
+    claim of the AccessToken, which Cockpit provisions as ``{APP_PREFIX}-{tenant_id}-{role}``.
+    /me then verifies that AccessToken against the pool's JWKS before it trusts any
+    claim, so the mock returns RS256 tokens signed by the test key, with the pool
+    issuer, ``token_use=access`` and the app client id — the claims a real Cognito
+    AccessToken carries.
     """
+    import time
+
     from jose import jwt as jose_jwt
 
     def _jwt(claims: Dict[str, Any]) -> str:
-        # get_unverified_claims() only base64url-decodes the payload, so any
-        # signing secret works — the SDK never verifies the signature.
-        return jose_jwt.encode(claims, "test-secret", algorithm="HS256")
+        now = int(time.time())
+        base = {"iss": _TEST_ISSUER, "iat": now, "exp": now + 3600}
+        return jose_jwt.encode({**base, **claims}, _TEST_PRIVATE_PEM, algorithm="RS256",
+                               headers={"kid": _TEST_KID})
 
     def fake_initiate_auth(**kwargs):
         params = kwargs.get("AuthParameters", {})
@@ -163,18 +206,47 @@ def mock_cognito_login():
                 "InitiateAuth",
             )
         user = _COGNITO_USERS[username]
-        group = f"{{app-name}}-{user['tenant_id']}-{user['role']}"
-        access_token = _jwt({"sub": username, "username": username, "cognito:groups": [group]})
-        id_token = _jwt({"sub": username, "email": username, "cognito:username": username})
+        # Plain concatenation, not an f-string literal: in an f-string the template
+        # placeholder's doubled braces collapse to single ones, so the group would no
+        # longer match the prefix that src/handlers/auth.py parses with.
+        group = "-".join([APP_PREFIX, user["tenant_id"], user["role"]])
+        access_token = _jwt({
+            "sub": username,
+            "username": username,
+            "token_use": "access",
+            "client_id": os.environ["COGNITO_CLIENT_ID"],
+            "cognito:groups": [group],
+        })
+        id_token = _jwt({
+            "sub": username,
+            # The SDK reports user.username from the IdToken email claim (_build_result),
+            # and test_login_returns_token_for_all_roles expects the login name there.
+            "email": username,
+            "cognito:username": username,
+            "token_use": "id",
+            "aud": os.environ["COGNITO_CLIENT_ID"],
+        })
         return {"AuthenticationResult": {"AccessToken": access_token, "IdToken": id_token, "ExpiresIn": 3600}}
+
+    def fake_requests_get(url, *args, **kwargs):
+        # Only the user pool's JWKS is served. Any other URL fails the test loudly
+        # instead of reaching the network.
+        if url != _TEST_JWKS_URL:
+            raise AssertionError(f"unexpected HTTP GET in auth tests: {url}")
+        response = MagicMock()
+        response.json.return_value = _TEST_JWKS
+        response.raise_for_status.return_value = None
+        return response
 
     mock_client = MagicMock()
     mock_client.initiate_auth.side_effect = fake_initiate_auth
-    # me() best-effort calls admin_get_user for the email; let it fail so the SDK
-    # falls back to the token's username claim (auth tests don't assert on email).
+    # me() and the provider look up the email best-effort (admin_get_user / get_user);
+    # let both fail so the SDK takes its no-email fallback (auth tests do not assert on email).
     mock_client.admin_get_user.side_effect = Exception("admin_get_user not mocked")
+    mock_client.get_user.side_effect = Exception("get_user not mocked")
 
-    with patch("boto3.client", return_value=mock_client):
+    with patch("boto3.client", return_value=mock_client), \
+            patch("requests.get", side_effect=fake_requests_get):
         yield
 
 

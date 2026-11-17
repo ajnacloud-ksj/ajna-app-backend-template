@@ -46,5 +46,20 @@ def test_ready_db_fail():
 
 
 def test_status():
-    result = health.status(make_event("GET", "/status"), make_context())
+    # /status reports cache metrics from db.get_stats(). The IbexDB client returns a
+    # dict there (ajna_cloud/ibex.py IbexClient.get_stats), so the stub must return
+    # one too; a bare MagicMock returns a MagicMock that cannot be %-formatted.
+    mock_db = MagicMock()
+    mock_db.get_stats.return_value = {"cache_hit_rate": 0.25, "total_requests": 8}
+    result = health.status(make_event("GET", "/status"), make_context(db=mock_db))
     assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert body["status"] == "operational"
+    assert body["cache"] == {"hit_rate": "25.0%", "total_requests": 8}
+
+
+def test_status_without_db_stats():
+    # A db without get_stats (e.g. a non-IbexDB storage adapter) gets no cache block.
+    result = health.status(make_event("GET", "/status"), make_context(db=object()))
+    assert result["statusCode"] == 200
+    assert "cache" not in json.loads(result["body"])
