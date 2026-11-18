@@ -43,10 +43,12 @@ TENANT_CONFIG = 'tenant_config'
 TENANT_FIELD_CONFIG = 'tenant_field_config'
 USERS = 'users'
 SETTINGS = 'settings'  # app_settings is RBAC-granted but has no schema file
+WEBHOOK_INBOX = 'webhook_inbox'  # append-only webhook deliveries (ajna_cloud.webhook_inbox)
 
 # ── Physical names — for direct db.query / db.write / db.update calls ─────────
 ITEM_TABLE = physical(ITEMS)
 TENANT_CONFIG_TABLE = physical(TENANT_CONFIG)
+WEBHOOK_INBOX_TABLE = physical(WEBHOOK_INBOX)
 
 # Tables created during tenant/db setup — discovered from the schema directory.
 ESSENTIAL_TABLES = discover_tables()

@@ -59,6 +59,12 @@ COPY --from=deps /app-deps /app-deps
 # something OLDER than the base now actually gets the older version, so keep requirements.txt to
 # genuine app-specific deps.
 ENV PYTHONPATH=/var/task:/app-deps
+# The app manifest (ajna-app-infra#1554 sections 6 and 13): its service users. The SDK checks
+# every @scheduled service_user and the db-setup seed user against it at import (cwd /var/task),
+# also in the deploy-time db-setup that runs this image. The data service enforces only the
+# version the cockpit registers (read from the deployed commit). In the base stage so the local
+# dev stage has it too.
+COPY ajna.manifest.json ${LAMBDA_TASK_ROOT}/ajna.manifest.json
 
 # ── dev: local hot-reload. src/ + local_dev.py are bind-mounted by
 #    docker-compose.local.yml (not COPY'd), so edits reload with no rebuild.

@@ -24,7 +24,9 @@ services:
         # on); src/app.py needs >= 1.53.1 for AuthHandlers.auth_routes().
         # THE ONE SDK VERSION SOURCE in this repo: the SDK fleet bump edits this line. ci/test.sh
         # (the CI test job) reads the SDK version from it, and dev.sh reads the image from it.
-        BASE_IMAGE: ghcr.io/ajnacloud-ksj/ajna-lambda-base:py312-2.4.1
+        # SDK 4 is token only: no IbexDB key anywhere (see .env.example). A dev build tag
+        # (py312-X.Y.Z.devN) is accepted: it is the PEP 440 version CodeArtifact holds.
+        BASE_IMAGE: ghcr.io/ajnacloud-ksj/ajna-lambda-base:py312-4.2.0.dev801
     # The dev stage's CMD already runs uvicorn --reload; no entrypoint/command override needed.
     ports:
       - "${PORT_BACKEND:-8000}:8000"

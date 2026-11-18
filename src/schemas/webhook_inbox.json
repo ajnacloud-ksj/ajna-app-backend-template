@@ -1,0 +1,17 @@
+{
+    "fields": {
+        "id": {"type": "string", "required": true},
+        "connection_id": {"type": "string", "required": true},
+        "provider": {"type": "string", "required": true},
+        "event_id": {"type": "string", "required": true},
+        "body_sha256": {"type": "string", "required": true},
+        "received_at": {"type": "string", "required": true},
+        "verify_mode": {"type": "string", "required": true},
+        "headers": {"type": "string", "required": false},
+        "body": {"type": "string", "required": false},
+        "status": {"type": "string", "required": true},
+        "attempts": {"type": "integer", "required": false},
+        "error": {"type": "string", "required": false},
+        "processed_at": {"type": "string", "required": false}
+    }
+}

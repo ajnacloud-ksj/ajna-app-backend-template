@@ -1,9 +1,13 @@
 """Shared fixtures for {{app-name}} backend tests."""
 
+import atexit
 import json
+import shutil
 import sys
 import os
+import tempfile
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Dict, List
 from unittest.mock import patch, MagicMock
 
@@ -28,6 +32,39 @@ os.environ.setdefault("COGNITO_USER_POOL_ID", "test-pool-id")
 # the tests build Cognito group names from the same value the code parses them with.
 os.environ.setdefault("APP_PREFIX", "{{app-name}}")
 APP_PREFIX = os.environ["APP_PREFIX"]
+
+# ── App manifest (ajna.manifest.json) ─────────────────────────────────────────
+# The SDK reads ./ajna.manifest.json (or $AJNA_MANIFEST_PATH) at import, when a @scheduled job or
+# the db-setup seed names a service user, and refuses a manifest whose "app" is not a slug. In
+# the TEMPLATE repo the file still says "app": "{{app-name}}": the cockpit's repo seed
+# (ajna-app-infra github_seed.py) replaces that placeholder in every .json file when it
+# generates an app. So, in the template only, the tests read a copy of the ONE manifest with the
+# placeholder rendered exactly as the seed renders it (a plain text replace). In a generated app
+# the file has no placeholder, and the tests read the real file. No second manifest is kept.
+#
+# The placeholder is built from parts on purpose: the repo seed rewrites every literal copy of it
+# in .py files too, and in a generated app this check must still look for the real placeholder.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+MANIFEST_FILE = REPO_ROOT / "ajna.manifest.json"
+APP_NAME_PLACEHOLDER = "{{" + "app-name" + "}}"
+#: The app slug the template's own tests render the placeholder as.
+TEMPLATE_TEST_APP = "template-app"
+
+
+def _manifest_path_for_tests() -> Path:
+    text = MANIFEST_FILE.read_text(encoding="utf-8")
+    if APP_NAME_PLACEHOLDER not in text:
+        return MANIFEST_FILE
+    out_dir = Path(tempfile.mkdtemp(prefix="ajna-manifest-"))
+    out = out_dir / MANIFEST_FILE.name
+    out.write_text(text.replace(APP_NAME_PLACEHOLDER, TEMPLATE_TEST_APP), encoding="utf-8")
+    atexit.register(shutil.rmtree, out_dir, True)   # only this run's own directory
+    return out
+
+
+if not os.environ.get("AJNA_MANIFEST_PATH"):
+    os.environ["AJNA_MANIFEST_PATH"] = str(_manifest_path_for_tests())
+MANIFEST_PATH = Path(os.environ["AJNA_MANIFEST_PATH"])
 
 # ── Fake IbexDB ────────────────────────────────────────────────────────────────
 
