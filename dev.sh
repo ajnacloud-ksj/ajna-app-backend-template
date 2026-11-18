@@ -857,11 +857,11 @@ cmd_db_setup() {
   else
     warn "TENANT_ID not found in .env — db-setup will use token-derived tenant context"
   fi
-  info "Running database setup at $url ..."
   if ! command -v curl &>/dev/null; then
-    warn "curl not found — run manually: curl -X POST $url"
-    return
+    error "curl is not installed: db-setup needs it. Install curl, or run: curl -X POST $url"
+    return 1
   fi
+  info "Running database setup at $url ..."
   # Authenticate with your own dev user (DEV_LOGIN_EMAIL / DEV_LOGIN_PASSWORD in .env
   # or the environment) to get a Bearer token. No login is ever stored in this repo.
   local token="" dev_email dev_password
@@ -870,18 +870,35 @@ cmd_db_setup() {
   if [ -z "$dev_email" ] || [ -z "$dev_password" ]; then
     warn "DEV_LOGIN_EMAIL / DEV_LOGIN_PASSWORD not set in .env — skipping login."
   else
+    # `|| token=""`: a refused login or an unreachable backend must not end the script silently
+    # (set -euo pipefail); the empty token is reported just below.
     token=$(DEV_LOGIN_EMAIL="$dev_email" DEV_LOGIN_PASSWORD="$dev_password" python3 -c \
         "import os,json; print(json.dumps({'username': os.environ['DEV_LOGIN_EMAIL'], 'password': os.environ['DEV_LOGIN_PASSWORD']}))" \
       | curl -s -X POST "$login_url" -H "Content-Type: application/json" --data @- \
-      | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null)
+      | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null) \
+      || token=""
   fi
-  if [ -z "$token" ]; then
-    warn "Could not obtain auth token — calling setup without auth (will fail if auth is enforced)."
-    curl -s -X POST "$url" "${tenant_header[@]}" | (command -v python3 &>/dev/null && python3 -m json.tool || cat)
+  local -a auth_header=()
+  if [ -n "$token" ]; then
+    auth_header=(-H "Authorization: Bearer $token")
   else
-    curl -s -X POST "$url" -H "Authorization: Bearer $token" "${tenant_header[@]}" | (command -v python3 &>/dev/null && python3 -m json.tool || cat)
+    warn "Could not obtain auth token — calling setup without auth (will fail if auth is enforced)."
+  fi
+  # The setup answer decides the marker: only an HTTP 200 marks setup done. A failed call (or no
+  # answer: "000") leaves no marker and fails the command, so the next run tries again.
+  local body status
+  body=$(mktemp)
+  status=$(curl -s -o "$body" -w '%{http_code}' -X POST "$url" \
+             ${auth_header[@]+"${auth_header[@]}"} ${tenant_header[@]+"${tenant_header[@]}"}) \
+    || status="${status:-000}"
+  if command -v python3 &>/dev/null && python3 -m json.tool "$body" 2>/dev/null; then :; else cat "$body"; echo; fi
+  rm -f "$body"
+  if [ "$status" != "200" ]; then
+    error "db-setup failed (HTTP $status): not marking setup as done."
+    return 1
   fi
   touch "$SETUP_MARKER"   # mark setup done so it isn't re-run on every restart
+  info "db-setup done."
 }
 
 # Wipe local IbexDB data (MinIO warehouse + Iceberg catalog) and rebuild a fresh DB.
