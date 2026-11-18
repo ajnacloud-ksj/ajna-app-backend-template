@@ -602,10 +602,10 @@ cmd_setup() {
   echo ""
   info "Setup complete. Next steps:"
   echo "  1. Run: ./dev.sh start"
-  echo "  2. First run only: curl -X POST http://localhost:8000/v1/admin/database/setup"
   echo ""
-  echo "  No IbexDB key: the SDK is token only. Data calls need the app's AWS workload"
-  echo "  identity, so they work on the deployed app, not from a laptop yet (see README)."
+  echo "  No IbexDB key: the SDK is token only. Data calls, and the database setup, need the"
+  echo "  app's AWS workload identity, so they work on the deployed app, not from a laptop yet."
+  echo "  The deploy-time db-setup creates the tables and roles of every org (see README)."
 }
 
 # Pull one repo onto its target branch, stashing local changes if the tree is dirty.
@@ -752,18 +752,12 @@ cmd_start() {
   echo "  Login    →  your own dev Cognito user (team password manager)"
   echo ""
 
-  # Auto-run db setup only the first time (no setup marker yet). cmd_db_setup creates the
-  # marker, so subsequent restarts skip this.
+  # No auto db-setup: the SDK is token only, and the local stack cannot issue the deploy actor's
+  # token to a laptop yet, so a local setup call is refused. The deploy-time db-setup creates the
+  # tables and roles (README, "Data access: token only").
   if [ "${_FIRST_START:-0}" = "1" ]; then
-    info "First start (no db-setup marker) — running database setup ..."
-    # Wait for backend to be healthy before hitting setup
-    local retries=0
-    until curl -sf "http://localhost:$PORT_BACKEND/v1/health" &>/dev/null || [ $retries -ge 15 ]; do
-      sleep 1; retries=$((retries+1))
-    done
-    cmd_db_setup
-    echo ""
-    info "Database ready. You can re-run anytime: ./dev.sh db-setup"
+    info "First start: no local database setup (token only; the deployed app's db-setup does it)."
+    touch "$SETUP_MARKER"   # say it once, not on every start
   fi
 
   info "Commands:"
@@ -895,9 +889,9 @@ cmd_reset_db() {
     if docker volume rm "$v" >/dev/null 2>&1; then info "removed volume $v"; removed=$((removed+1)); fi
   done
   [ "$removed" -eq 0 ] && info "no local IbexDB volumes present (already clean)"
-  rm -f "$SETUP_MARKER"       # force a fresh db-setup on the next start
+  rm -f "$SETUP_MARKER"       # a fresh stack: the next start says again that setup is not local
   info "Rebooting local stack on a fresh DB ..."
-  cmd_start --local           # recreates the stack + empty volumes, then auto-runs db-setup
+  cmd_start --local           # recreates the stack + empty volumes
   info "Local IbexDB reset complete."
 }
 
