@@ -49,3 +49,29 @@ def test_default_roles_use_grants_helper():
     keys = {k for role in admin.DEFAULT_ROLES for k in role["table_access"]}
     assert keys, "roles must carry per-table grants"
     assert all(k.startswith(f"ibex:{admin.grant_namespace(admin._NS)}.app_") for k in keys), keys
+
+
+# ── app-scoped role ids (per-app data area, SDK role_scope) ──────────────────
+
+def test_per_app_seeds_every_role_but_super_admin_app_scoped():
+    """In per-app mode the SDK client writes the declared roles as ``<ns>.<role>``; the code keeps
+    bare ids. ``super_admin`` is org-wide: never seeded by the app, never app-scoped."""
+    from ajna_cloud import role_scope
+
+    seeded = role_scope.seedable(admin.DEFAULT_ROLES, "myapp")
+    assert [r["role_id"] for r in seeded] == ["admin", "user"]
+    assert [role_scope.qualify(r["role_id"], "myapp") for r in seeded] == ["myapp.admin", "myapp.user"]
+    with pytest.raises(role_scope.ReservedRoleScope):
+        role_scope.qualify("super_admin", "myapp")
+
+
+def test_scoped_roles_switch_is_left_unset(monkeypatch, area):
+    """Unset = scoped (the only behaviour). ``false`` is refused at start."""
+    from ajna_cloud import role_scope
+
+    area("per-app")
+    monkeypatch.delenv("AJNA_APP_SCOPED_ROLES", raising=False)
+    role_scope.check_config()
+    monkeypatch.setenv("AJNA_APP_SCOPED_ROLES", "false")
+    with pytest.raises(role_scope.RoleScopeConfigError):
+        role_scope.check_config()

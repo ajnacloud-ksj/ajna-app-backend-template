@@ -63,16 +63,6 @@ _ibex_port() {
     | grep -o '"[0-9]*:8000"' | head -1 | tr -d '"' | cut -d: -f1
 }
 
-# Read the local IbexDB admin key from ibex-db-lambda's compose (IBEX_ADMIN_KEY).
-# The local stack authenticates against THIS key — NOT the dev-cluster developer key
-# baked into .env.example. So when dev.sh points the backend at the local stack it must
-# swap the key too, else the local IbexDB rejects every request with 401. Falls back to
-# the known local default if the compose file/pattern is absent.
-_ibex_key() {
-  grep -E '^[[:space:]]*IBEX_ADMIN_KEY:' "$IBEX_COMPOSE_FILE" 2>/dev/null \
-    | head -1 | sed -E 's/.*IBEX_ADMIN_KEY:[[:space:]]*//; s/[[:space:]]*$//' | tr -d '"'
-}
-
 # IbexDB local stack path resolution:  env var override → derived path → empty.
 # Defined as a function so it can be re-run after an auto-clone makes the repo appear.
 # When present, IbexDB runs locally (MinIO + Iceberg + FastAPI) for zero-latency dev.
@@ -91,9 +81,6 @@ resolve_ibex_paths() {
   IBEX_LOCAL_URL="http://localhost:${p:-9000}"
   # IBEX_CONTAINER_URL: used inside the backend container to reach the ibex stack on the host
   IBEX_CONTAINER_URL="http://host.docker.internal:${p:-9000}"
-  # IBEX_LOCAL_KEY: the local stack's admin key, swapped into .env alongside the URL.
-  IBEX_LOCAL_KEY="$( [ -f "$IBEX_COMPOSE_FILE" ] && _ibex_key || true )"
-  IBEX_LOCAL_KEY="${IBEX_LOCAL_KEY:-ibx_local_admin_dev}"
 }
 resolve_ibex_paths
 
@@ -495,31 +482,34 @@ _set_env_kv() {
   IBEX_ENV_CHANGED=1
 }
 
+# Remove a .env key (a key dev.sh wrote before the token-only SDK). Marks IBEX_ENV_CHANGED=1
+# only when a line was removed.
+_unset_env_kv() {
+  local key="$1"
+  grep -q "^${key}=" "$BACKEND_ENV" 2>/dev/null || return 0
+  sed -i.bak "/^${key}=/d" "$BACKEND_ENV" && rm -f "$BACKEND_ENV.bak"
+  IBEX_ENV_CHANGED=1
+}
+
 ibex_inject_env() {
   if ! ibex_available; then return; fi
   _set_env_kv IBEX_API_URL "$IBEX_CONTAINER_URL"
   info "IBEX_API_URL → $IBEX_CONTAINER_URL (local stack via host.docker.internal)"
-  # The local stack uses its own admin key — swap it in too, or it 401s every request.
-  _set_env_kv IBEX_API_KEY "$IBEX_LOCAL_KEY"
-  info "IBEX_API_KEY → local stack key"
+  # No key: the SDK is token only. Drop one an older dev.sh wrote.
+  _unset_env_kv IBEX_API_KEY
 }
 
 # Restore the remote IBEX_API_URL from .env.example so stopping the local stack
 # (or switching to --remote) doesn't leave .env pointing at host.docker.internal.
 # Safe to call unconditionally: only rewrites when .env holds the container URL.
 ibex_restore_env() {
-  local remote_url remote_key
+  local remote_url
   remote_url=$(grep "^IBEX_API_URL=" "$BACKEND_ENV_EXAMPLE" 2>/dev/null | cut -d= -f2-)
-  remote_key=$(grep "^IBEX_API_KEY=" "$BACKEND_ENV_EXAMPLE" 2>/dev/null | cut -d= -f2-)
   if [ -n "$remote_url" ] && grep -q "^IBEX_API_URL=$IBEX_CONTAINER_URL" "$BACKEND_ENV" 2>/dev/null; then
     _set_env_kv IBEX_API_URL "$remote_url"
     info "IBEX_API_URL restored to remote: $remote_url"
-    # Restore the matching remote key swapped out by ibex_inject_env.
-    if [ -n "$remote_key" ]; then
-      _set_env_kv IBEX_API_KEY "$remote_key"
-      info "IBEX_API_KEY restored to remote dev key"
-    fi
   fi
+  _unset_env_kv IBEX_API_KEY
 }
 
 # Keep the UI's VITE_API_URL pointed at the ACTUAL backend port. dev.sh shifts the backend
@@ -612,10 +602,10 @@ cmd_setup() {
   echo ""
   info "Setup complete. Next steps:"
   echo "  1. Run: ./dev.sh start"
-  echo "  2. First run only: curl -X POST http://localhost:8000/v1/admin/database/setup"
   echo ""
-  echo "  The .env.example includes a shared dev IBEX_API_KEY for the triviz.cloud"
-  echo "  dev cluster. Do NOT use this key in production."
+  echo "  No IbexDB key: the SDK is token only. Data calls, and the database setup, need the"
+  echo "  app's AWS workload identity, so they work on the deployed app, not from a laptop yet."
+  echo "  The deploy-time db-setup creates the tables and roles of every org (see README)."
 }
 
 # Pull one repo onto its target branch, stashing local changes if the tree is dirty.
@@ -762,18 +752,12 @@ cmd_start() {
   echo "  Login    →  your own dev Cognito user (team password manager)"
   echo ""
 
-  # Auto-run db setup only the first time (no setup marker yet). cmd_db_setup creates the
-  # marker, so subsequent restarts skip this.
+  # No auto db-setup: the SDK is token only, and the local stack cannot issue the deploy actor's
+  # token to a laptop yet, so a local setup call is refused. The deploy-time db-setup creates the
+  # tables and roles (README, "Data access: token only").
   if [ "${_FIRST_START:-0}" = "1" ]; then
-    info "First start (no db-setup marker) — running database setup ..."
-    # Wait for backend to be healthy before hitting setup
-    local retries=0
-    until curl -sf "http://localhost:$PORT_BACKEND/v1/health" &>/dev/null || [ $retries -ge 15 ]; do
-      sleep 1; retries=$((retries+1))
-    done
-    cmd_db_setup
-    echo ""
-    info "Database ready. You can re-run anytime: ./dev.sh db-setup"
+    info "First start: no local database setup (token only; the deployed app's db-setup does it)."
+    touch "$SETUP_MARKER"   # say it once, not on every start
   fi
 
   info "Commands:"
@@ -905,9 +889,9 @@ cmd_reset_db() {
     if docker volume rm "$v" >/dev/null 2>&1; then info "removed volume $v"; removed=$((removed+1)); fi
   done
   [ "$removed" -eq 0 ] && info "no local IbexDB volumes present (already clean)"
-  rm -f "$SETUP_MARKER"       # force a fresh db-setup on the next start
+  rm -f "$SETUP_MARKER"       # a fresh stack: the next start says again that setup is not local
   info "Rebooting local stack on a fresh DB ..."
-  cmd_start --local           # recreates the stack + empty volumes, then auto-runs db-setup
+  cmd_start --local           # recreates the stack + empty volumes
   info "Local IbexDB reset complete."
 }
 

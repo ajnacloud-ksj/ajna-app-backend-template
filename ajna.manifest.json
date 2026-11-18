@@ -1,0 +1,26 @@
+{
+  "app": "{{app-name}}",
+  "version": 1,
+  "service_users": [
+    {
+      "name": "app-jobs",
+      "level": "job",
+      "tables": ["app_webhook_inbox"],
+      "ops": ["QUERY"],
+      "hard_delete": ["app_webhook_inbox"]
+    },
+    {
+      "name": "app-seed",
+      "level": "job",
+      "tables": ["app_tenant_config"],
+      "ops": ["QUERY", "UPSERT"]
+    },
+    {
+      "name": "app-events",
+      "level": "event",
+      "tables": ["app_webhook_inbox"]
+    }
+  ],
+  "public": {},
+  "platform_ops": []
+}

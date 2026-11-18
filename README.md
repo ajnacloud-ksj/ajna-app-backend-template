@@ -37,8 +37,8 @@ parent/
 ```bash
 # 1. From this directory:
 cp .env.example .env
-#    Edit .env and set IBEX_API_KEY (+ Cognito values) for your app.
-#    Generate these from Cockpit → app → Local Dev Setup (https://cockpit.triviz.cloud).
+#    Edit .env and set the Cognito values for your app. There is NO IbexDB key: the SDK
+#    (ajna-cloud 4.x) is token only (see "Data access: token only" below).
 
 # 2. Start the full stack (backend + UI, hot-reload):
 ./dev.sh start
@@ -81,7 +81,8 @@ credentials**:
 
 - **Login** uses Cognito `initiate_auth` (USER_PASSWORD_AUTH), an *unsigned* API.
 - **Token verification** fetches Cognito's public JWKS over HTTPS and verifies locally.
-- **Data CRUD** goes to IbexDB over HTTPS using `IBEX_API_KEY`.
+- **Data CRUD** goes to IbexDB over HTTPS with a short session token per actor, never a key
+  (see "Data access: token only" below).
 
 The **only** features that need AWS credentials are the **User Management** admin screens
 (create / list / disable users), which call signed Cognito `admin_*` APIs. If you use those,
@@ -91,8 +92,7 @@ configure dev-account credentials in `~/.aws` (the local stack mounts it read-on
 
 ## Choosing a tenant
 
-The dev `IBEX_API_KEY` is app-scoped and works for **any** {{app-name}} tenant. Which
-tenant's data the app reads/writes is resolved per request in this order:
+Which tenant's data the app reads/writes is resolved per request in this order:
 
 1. `X-Tenant-ID` request header (super_admin acting on behalf of a tenant), then
 2. the logged-in user's Cognito group (`{{app-name}}-{tenant}-{role}`), then
@@ -101,7 +101,39 @@ tenant's data the app reads/writes is resolved per request in this order:
 To scope local dev to one tenant, set `TENANT_ID` in `.env` and restart. The app does not
 create tenants: `POST /v1/admin/tenants` returns 410. Add a customer in the cockpit
 (Organizations -> add org to app). The cockpit creates the org and the tenant, then
-provisions this app.
+provisions this app. The deploy-time db-setup creates the tables and the roles of every org.
+
+---
+
+## Data access: token only
+
+The SDK (ajna-cloud 4.x) sends no IbexDB key. Each data call carries a short session token for
+ONE actor, issued by the data service against the app's AWS workload proof:
+
+| Actor | Who | Where in this repo |
+|-------|-----|--------------------|
+| A person | the signed-in user (their roles apply) | every route |
+| The deploy actor | the backend build: db-setup (tables, role catalog) | `make_database_admin_handlers` in `src/app.py` |
+| `app-seed` (job) | db-setup's seed, a one-shot job after each deploy and each org added | `src/seed.py` |
+| `app-jobs` (job) | scheduled jobs | `src/handlers/housekeeping.py` (the example to replace) |
+| `app-events` (event) | webhook receivers: append-only on `app_webhook_inbox` | none yet (`ajna_cloud.webhook_inbox`) |
+
+Service users are declared in `ajna.manifest.json` (repo root, shipped in the image). The cockpit
+registers the version at the deployed commit; the data service enforces only that version. A
+service user gets ONLY the tables listed for it. When you add a job or a seed step, add its
+tables to its user in the manifest. `tests/test_manifest.py` checks the manifest with the SDK's
+own validator. The manifest says `"app": "{{app-name}}"` in the template: the cockpit's repo seed
+replaces it with the app's name, and the template's own tests render a temporary copy
+(`tests/conftest.py`).
+
+Per-app data area (`AJNA_DATA_AREA=per-app`): the app's tables live in its own namespace, and its
+roles are stored app-scoped (`<app>.admin`, `<app>.user`). The code keeps bare role ids;
+`super_admin` stays org-wide.
+
+**Local dev:** the local IbexDB stack cannot issue a token to a laptop yet (it needs the app's
+AWS role), so data calls from `./dev.sh start` are refused (`AUTH_PROOF_UNAVAILABLE` or
+`AUTH_ACTOR_REQUIRED`). Test data behaviour with the unit tests, and end to end on the deployed
+dev app.
 
 ---
 
@@ -110,8 +142,10 @@ provisions this app.
 ```
 src/
 ├── app.py                  # Lambda entry point + route table
+├── seed.py                 # db-setup's seed (runs as the app-seed job)
 ├── config/
 │   ├── roles.py            # RBAC role constants (super_admin / admin / user)
+│   ├── service_users.py    # service user names declared in ajna.manifest.json
 │   ├── settings.py         # App-specific config (env-driven)
 │   └── tables.py           # Single source of truth for IbexDB table names
 ├── lib/
@@ -120,7 +154,8 @@ src/
 ├── handlers/
 │   ├── health.py           # /health, /ready, /status
 │   ├── auth.py             # login / me / permissions
-│   ├── admin.py            # tenant & RBAC management
+│   ├── admin.py            # tenant read/update + RBAC management, DEFAULT_ROLES
+│   ├── housekeeping.py     # EXAMPLE @scheduled job (webhook inbox retention)
 │   ├── users.py            # tenant-scoped user management + sync
 │   ├── audit.py            # changelog + record history
 │   ├── field_config.py     # per-tenant custom fields
@@ -132,7 +167,8 @@ src/
     ├── items.json          # EXAMPLE entity schema — copy & rename for your domain
     ├── users.json
     ├── tenant_config.json
-    └── tenant_field_config.json
+    ├── tenant_field_config.json
+    └── webhook_inbox.json  # append-only webhook deliveries (event user)
 tests/
 Dockerfile                  # Production ARM64 Lambda image
 Dockerfile.local            # Local dev with hot-reload
@@ -152,7 +188,6 @@ README one level up for the full add-an-entity cycle.
 | Variable | Purpose |
 |----------|---------|
 | `IBEX_API_URL` | IbexDB cluster URL |
-| `IBEX_API_KEY` | App-level dev key (works for all tenants of this app) |
 | `TENANT_ID` | Default/fallback tenant slug |
 | `DB_NAMESPACE` | IbexDB namespace (`default`); in per-app mode the SDK uses the app namespace instead |
 | `AJNA_DATA_AREA` | `per-app` — tenant data in `{tenant}_{app namespace}` (the default for new apps, same as the deployed app) |

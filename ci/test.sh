@@ -26,7 +26,9 @@ SDK_SOURCE="docker-compose.local.yml"
 TAG="$(awk '/BASE_IMAGE:[[:space:]]*[^[:space:]]*ajna-lambda-base:/{print $2; exit}' "$SDK_SOURCE")"
 TAG="${TAG##*:}"
 V="${TAG#py312-}"
-if ! [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+# X.Y.Z, or a PEP 440 pre/dev release (X.Y.Z.devN, X.Y.ZrcN): the same text is the image tag
+# suffix, the CodeArtifact version and what `pip show` prints.
+if ! [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.dev[0-9]+|(a|b|rc)[0-9]+)?$ ]]; then
   echo "cannot read the SDK version from BASE_IMAGE in $SDK_SOURCE (got tag '$TAG')" >&2
   exit 1
 fi
