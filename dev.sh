@@ -463,6 +463,13 @@ ibex_stop() {
   [ -n "$stale" ] && docker rm -f $stale >/dev/null 2>&1 || true
 }
 
+# The value of KEY in an env FILE, or empty. Never fails: under `set -euo pipefail` a bare
+# grep-and-cut command substitution exits the whole script SILENTLY when the line or the file is
+# missing. Callers check for empty and say which setting is missing.
+_env_val() {
+  { grep "^${1}=" "$2" 2>/dev/null || true; } | head -1 | cut -d= -f2-
+}
+
 # Point the backend at the local ibex stack by overriding IBEX_API_URL in .env.
 # The backend runs inside Docker, so it must use host.docker.internal to reach
 # the ibex stack on the host — not localhost (which is the container itself).
@@ -472,7 +479,7 @@ ibex_stop() {
 # container would otherwise keep the old value until a manual stop/start).
 _set_env_kv() {
   local key="$1" val="$2" cur
-  cur=$(grep "^${key}=" "$BACKEND_ENV" 2>/dev/null | cut -d= -f2-)
+  cur=$(_env_val ${key} "$BACKEND_ENV")
   [ "$cur" = "$val" ] && return 0
   if grep -q "^${key}=" "$BACKEND_ENV" 2>/dev/null; then
     sed -i.bak "s|^${key}=.*|${key}=${val}|" "$BACKEND_ENV" && rm -f "$BACKEND_ENV.bak"
@@ -504,7 +511,7 @@ ibex_inject_env() {
 # Safe to call unconditionally: only rewrites when .env holds the container URL.
 ibex_restore_env() {
   local remote_url
-  remote_url=$(grep "^IBEX_API_URL=" "$BACKEND_ENV_EXAMPLE" 2>/dev/null | cut -d= -f2-)
+  remote_url=$(_env_val IBEX_API_URL "$BACKEND_ENV_EXAMPLE")
   if [ -n "$remote_url" ] && grep -q "^IBEX_API_URL=$IBEX_CONTAINER_URL" "$BACKEND_ENV" 2>/dev/null; then
     _set_env_kv IBEX_API_URL "$remote_url"
     info "IBEX_API_URL restored to remote: $remote_url"
@@ -520,7 +527,7 @@ ui_sync_api_url() {
   local base="http://localhost:${PORT_BACKEND}"
   if grep -q "^VITE_API_URL=" "$UI_ENV" 2>/dev/null; then
     local cur suffix want
-    cur=$(grep "^VITE_API_URL=" "$UI_ENV" | head -1 | cut -d= -f2-)
+    cur=$(_env_val VITE_API_URL "$UI_ENV")
     # Preserve whatever path suffix the app expects (e.g. "/v1" or "") — only
     # swap the host:port. Some UIs put /v1 in baseURL, others put it
     # in each request path (green-box-telemetry) → never assume a suffix here.
@@ -543,7 +550,7 @@ ui_sync_api_url() {
 # open {tenant}.{app}.localhost. *.localhost resolves to 127.0.0.1 automatically.
 ui_local_url() {
   local tenant app
-  tenant=$(grep "^TENANT_ID=" "$BACKEND_ENV" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' ')
+  tenant=$(_env_val TENANT_ID "$BACKEND_ENV" | tr -d ' ')
   app=$(printf '%s' "$PROJECT_NAME" | tr -d '-')   # hyphen-free app label
   echo "http://${tenant:-default}.${app}.localhost:${PORT_UI}"
 }
@@ -842,7 +849,7 @@ cmd_db_setup() {
   local url="http://localhost:$PORT_BACKEND/v1/admin/database/setup"
   local login_url="http://localhost:$PORT_BACKEND/v1/auth/login"
   local tenant
-  tenant=$(grep "^TENANT_ID=" "$BACKEND_ENV" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' ')
+  tenant=$(_env_val TENANT_ID "$BACKEND_ENV" | tr -d ' ')
   local -a tenant_header=()
   if [ -n "$tenant" ]; then
     tenant_header=(-H "X-Tenant-ID: $tenant")
@@ -850,31 +857,48 @@ cmd_db_setup() {
   else
     warn "TENANT_ID not found in .env — db-setup will use token-derived tenant context"
   fi
-  info "Running database setup at $url ..."
   if ! command -v curl &>/dev/null; then
-    warn "curl not found — run manually: curl -X POST $url"
-    return
+    error "curl is not installed: db-setup needs it. Install curl, or run: curl -X POST $url"
+    return 1
   fi
+  info "Running database setup at $url ..."
   # Authenticate with your own dev user (DEV_LOGIN_EMAIL / DEV_LOGIN_PASSWORD in .env
   # or the environment) to get a Bearer token. No login is ever stored in this repo.
   local token="" dev_email dev_password
-  dev_email=${DEV_LOGIN_EMAIL:-$(grep "^DEV_LOGIN_EMAIL=" "$BACKEND_ENV" 2>/dev/null | head -1 | cut -d= -f2-)}
-  dev_password=${DEV_LOGIN_PASSWORD:-$(grep "^DEV_LOGIN_PASSWORD=" "$BACKEND_ENV" 2>/dev/null | head -1 | cut -d= -f2-)}
+  dev_email=${DEV_LOGIN_EMAIL:-$(_env_val DEV_LOGIN_EMAIL "$BACKEND_ENV")}
+  dev_password=${DEV_LOGIN_PASSWORD:-$(_env_val DEV_LOGIN_PASSWORD "$BACKEND_ENV")}
   if [ -z "$dev_email" ] || [ -z "$dev_password" ]; then
     warn "DEV_LOGIN_EMAIL / DEV_LOGIN_PASSWORD not set in .env — skipping login."
   else
+    # `|| token=""`: a refused login or an unreachable backend must not end the script silently
+    # (set -euo pipefail); the empty token is reported just below.
     token=$(DEV_LOGIN_EMAIL="$dev_email" DEV_LOGIN_PASSWORD="$dev_password" python3 -c \
         "import os,json; print(json.dumps({'username': os.environ['DEV_LOGIN_EMAIL'], 'password': os.environ['DEV_LOGIN_PASSWORD']}))" \
       | curl -s -X POST "$login_url" -H "Content-Type: application/json" --data @- \
-      | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null)
+      | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null) \
+      || token=""
   fi
-  if [ -z "$token" ]; then
-    warn "Could not obtain auth token — calling setup without auth (will fail if auth is enforced)."
-    curl -s -X POST "$url" "${tenant_header[@]}" | (command -v python3 &>/dev/null && python3 -m json.tool || cat)
+  local -a auth_header=()
+  if [ -n "$token" ]; then
+    auth_header=(-H "Authorization: Bearer $token")
   else
-    curl -s -X POST "$url" -H "Authorization: Bearer $token" "${tenant_header[@]}" | (command -v python3 &>/dev/null && python3 -m json.tool || cat)
+    warn "Could not obtain auth token — calling setup without auth (will fail if auth is enforced)."
+  fi
+  # The setup answer decides the marker: only an HTTP 200 marks setup done. A failed call (or no
+  # answer: "000") leaves no marker and fails the command, so the next run tries again.
+  local body status
+  body=$(mktemp)
+  status=$(curl -s -o "$body" -w '%{http_code}' -X POST "$url" \
+             ${auth_header[@]+"${auth_header[@]}"} ${tenant_header[@]+"${tenant_header[@]}"}) \
+    || status="${status:-000}"
+  if command -v python3 &>/dev/null && python3 -m json.tool "$body" 2>/dev/null; then :; else cat "$body"; echo; fi
+  rm -f "$body"
+  if [ "$status" != "200" ]; then
+    error "db-setup failed (HTTP $status): not marking setup as done."
+    return 1
   fi
   touch "$SETUP_MARKER"   # mark setup done so it isn't re-run on every restart
+  info "db-setup done."
 }
 
 # Wipe local IbexDB data (MinIO warehouse + Iceberg catalog) and rebuild a fresh DB.
