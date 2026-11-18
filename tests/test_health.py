@@ -31,18 +31,50 @@ def test_health_check():
     assert body["status"] == "healthy"
 
 
-def test_ready_db_ok():
+class _HealthAnswer:
+    def __init__(self, status_code, body):
+        self.status_code, self._body = status_code, body
+
+    def json(self):
+        return self._body
+
+
+@pytest.fixture
+def data_service(monkeypatch):
+    """/ready (SDK >= 4.2.1, ajna-cloud-sdk#566) asks the data service's own unauthenticated
+    GET /health: no token, no tenant, no data call. The probe's HTTP GET is stubbed here."""
+    from ajna_cloud import health as probe
+
+    monkeypatch.setenv("IBEX_API_URL", "https://data.example")
+    probe.reset_cache()
+    state = {"answer": _HealthAnswer(200, {"status": "healthy", "version": "1.0.0"})}
+
+    def _get(url, **kw):
+        if isinstance(state["answer"], Exception):
+            raise state["answer"]
+        return state["answer"]
+
+    monkeypatch.setattr(probe, "_http_get", _get)
+    yield state
+    probe.reset_cache()
+
+
+def test_ready_when_the_data_service_answers(data_service):
     mock_db = MagicMock()
-    mock_db.list_tables.return_value = {"success": True}
+    mock_db.api_url = "https://data.example"
     result = health.ready(make_event("GET", "/ready"), make_context(db=mock_db))
     assert result["statusCode"] == 200
+    assert json.loads(result["body"])["checks"] == {"data_service": True}
+    mock_db.list_tables.assert_not_called()      # token only: /ready makes no data call
 
 
-def test_ready_db_fail():
+def test_not_ready_when_the_data_service_is_down(data_service):
+    data_service["answer"] = ConnectionError("connection refused")
     mock_db = MagicMock()
-    mock_db.list_tables.side_effect = Exception("connection refused")
+    mock_db.api_url = "https://data.example"
     result = health.ready(make_event("GET", "/ready"), make_context(db=mock_db))
     assert result["statusCode"] == 503
+    assert json.loads(result["body"])["ready"] is False
 
 
 def test_status():

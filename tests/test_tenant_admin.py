@@ -18,35 +18,13 @@ CREATE_KEY = ('POST', '/v1/admin/tenants')
 CREATE_BODY = {"tenant_id": "acme", "company_name": "Acme", "contact_email": "a@acme.test"}
 
 
-class _RecordingCognito:
-    """Stands in for CognitoProvisioner so no test can reach boto3."""
-
-    def __init__(self):
-        self.calls = []
-
-    def provision_tenant(self, **kw):
-        self.calls.append(("provision_tenant", kw))
-        return {}
-
-    def provision_tenant_groups(self, tenant_id):
-        self.calls.append(("provision_tenant_groups", tenant_id))
-        return {}
-
-
-@pytest.fixture
-def cognito(monkeypatch):
-    rec = _RecordingCognito()
-    monkeypatch.setattr(admin._tenant_admin, "cognito", rec)
-    return rec
-
-
 def _post_create(db):
     """Dispatch through the route table, as the Lambda does."""
     with as_role("super_admin"):
         return router.route_table[CREATE_KEY](event(body=CREATE_BODY), ctx(db, "super_admin"))
 
 
-def test_create_returns_410_and_points_to_the_cockpit(cognito):
+def test_create_returns_410_and_points_to_the_cockpit():
     resp = _post_create(FakeIbexDB())
     assert resp["statusCode"] == 410, resp
     error = json.loads(resp["body"])["error"].lower()
@@ -54,11 +32,32 @@ def test_create_returns_410_and_points_to_the_cockpit(cognito):
     assert "add org to app" in error
 
 
-def test_create_writes_no_tenant_row_and_no_cognito_groups(cognito):
+def test_create_writes_no_tenant_row():
     db = FakeIbexDB()
     _post_create(db)
     assert db._tables == {}
-    assert cognito.calls == []
+
+
+def test_the_app_provisions_no_login_groups():
+    """Org login groups are the cockpit's ("add org to app"); the app holds no provisioner."""
+    assert admin._tenant_admin.cognito is None
+    assert not hasattr(admin, "_cognito_provisioner")
+
+
+def test_bootstrap_route_is_gone():
+    """SDK 4 is token only: runtime DDL is never allowed, a person's token acts for its own
+    tenant only, and org groups are the cockpit's. Tables and roles come from the deploy-time
+    db-setup instead (see test_db_setup_reconciles_the_role_catalog)."""
+    assert ('POST', '/v1/admin/tenants/{tenant_id}/bootstrap') not in router.route_table
+    assert not hasattr(admin, "bootstrap_tenant")
+
+
+def test_db_setup_reconciles_the_role_catalog():
+    """db-setup runs per org on every deploy, so the declared roles heal every org."""
+    import src.app as app_module
+
+    assert app_module._db_admin._default_roles == admin.DEFAULT_ROLES
+    assert admin._rbac._default_roles == admin.DEFAULT_ROLES
 
 
 @pytest.mark.parametrize("key, handler_name", [
@@ -70,7 +69,7 @@ def test_read_and_update_still_use_the_sdk(key, handler_name):
     assert router.route_table[key] is getattr(admin._tenant_admin, handler_name)
 
 
-def test_tenant_admin_can_still_update_its_own_config(cognito):
+def test_tenant_admin_can_still_update_its_own_config():
     db = FakeIbexDB()
     db.write("app_tenant_config", [{"tenant_id": "acme", "company_name": "Old"}])
     with as_role("admin", tenant_id="acme"):

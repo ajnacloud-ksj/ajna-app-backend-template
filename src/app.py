@@ -8,6 +8,7 @@ from ajna_cloud import (
 )
 from ajna_cloud.app import make_tenant_db_factory
 from src.config.roles import MASTER_DATA_WRITE_ROLES
+from src.config.service_users import SEED_USER
 from src.config.settings import settings
 from src.config.tables import (
     TABLE_PREFIX, ESSENTIAL_TABLES, SCHEMA_DIR, url_segment,
@@ -15,6 +16,9 @@ from src.config.tables import (
 )
 from src.handlers import health, items, admin, users, storage, audit, auth, field_config
 from src.handlers import imports, exports
+# Side effect: registers the @scheduled example job (runs as the job service user).
+from src.handlers import housekeeping  # noqa: F401
+from src.seed import seed_defaults
 
 _SCHEMA_DIR = SCHEMA_DIR
 
@@ -36,6 +40,13 @@ _db_admin = make_database_admin_handlers(
     table_prefix=TABLE_PREFIX,
     confirm_token='DELETE_{{APP_NAME}}',
     schemas_dir=_SCHEMA_DIR,
+    # Every deploy, for every org: reconcile the declared role catalog (bare ids here; the SDK
+    # writes them app-scoped in per-app mode).
+    default_roles=admin.DEFAULT_ROLES,
+    # Token only: the deploy actor writes no rows, so the seed runs as a one-shot job as this
+    # declared job service user (ajna.manifest.json). seed_defaults must stay idempotent.
+    seed_fn=seed_defaults,
+    seed_service_user=SEED_USER,
 )
 
 # Schema-aware CRUD — handles validation, timestamps, and write-role checks
@@ -87,7 +98,6 @@ router = Router({
     ('GET',    '/v1/admin/tenants'):                       admin.list_tenants,
     ('GET',    '/v1/admin/tenants/{tenant_id}'):           admin.get_tenant,
     ('PUT',    '/v1/admin/tenants/{tenant_id}'):           admin.update_tenant,
-    ('POST',   '/v1/admin/tenants/{tenant_id}/bootstrap'): admin.bootstrap_tenant,
 
     # ── RBAC Management ────────────────────────────────────────────────────────
     ('POST',   '/v1/admin/rbac/roles'):                  admin.create_role,
