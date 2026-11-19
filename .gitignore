@@ -79,3 +79,6 @@ secrets.json
 
 # Playwright MCP artifacts
 .playwright-mcp/
+
+# dev.sh: the empty kit mount when the local stack is not used
+.ajna-kit-none/
