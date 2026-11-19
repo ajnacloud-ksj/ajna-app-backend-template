@@ -242,9 +242,14 @@ check_docker() {
 # GitHub-token auth); docker-compose.local.yml pulls the ghcr mirror (build.target: dev). Idempotent + best-effort:
 # if you can already pull (already logged in), it does nothing. Image ref is read from
 # the compose BASE_IMAGE arg so this stays correct across tag bumps (and no-ops if you move off ghcr).
+# The base image of docker-compose.local.yml (the one SDK version source), or empty.
+_base_image() {
+  awk '/BASE_IMAGE:[[:space:]]*ghcr\.io/{print $2; exit}' "$SCRIPT_DIR/docker-compose.local.yml" 2>/dev/null || true
+}
+
 ensure_ghcr_login() {
   local img
-  img="$(awk '/BASE_IMAGE:[[:space:]]*ghcr\.io/{print $2; exit}' "$SCRIPT_DIR/docker-compose.local.yml" 2>/dev/null)"
+  img="$(_base_image)"
   [ -n "$img" ] || return 0                                   # local base isn't on ghcr → nothing to do
   docker manifest inspect "$img" &>/dev/null && return 0      # already pullable → already authed
   if command -v gh &>/dev/null; then
@@ -314,6 +319,67 @@ ibex_available() {
 # Run docker compose against the ibex-db-lambda stack
 dc_ibex() {
   docker compose -p ibex-db-local -f "$IBEX_COMPOSE_FILE" "$@"
+}
+
+# ── Kit tokens on the local stack (#1554 section 14c) ─────────────────────────
+# A token-only app has no AWS proof locally. It signs a `kit` proof with its own key instead.
+# The SDK tool `python -m ajna_cloud.kit_local` keeps every local key in ONE per-developer
+# directory outside every repo (~/.ajna/local, 0700, files 0600): the local stack's admin key and
+# each app's kit keys. It runs in the base image (all SDK deps) with your SDK clone on PYTHONPATH,
+# so the host needs no Python packages. The app container sees only its own kit key folder.
+kit_local() {
+  local img dir="$HOME/.ajna/local"
+  img="$(_base_image)"
+  if [ -z "$img" ]; then
+    warn "No BASE_IMAGE in docker-compose.local.yml: cannot run the kit tool"
+    return 2
+  fi
+  if [ ! -f "$AJNA_SDK_PATH/ajna_cloud/kit_local.py" ]; then
+    warn "Your SDK clone at $AJNA_SDK_PATH has no kit tool (ajna-cloud 4.3.1 or later)."
+    warn "  Update it: git -C $AJNA_SDK_PATH pull"
+    return 2
+  fi
+  (umask 077 && mkdir -p "$dir")   # every level this makes is 0700 (~/.ajna too)
+  chmod 700 "$dir"
+  docker run --rm -v "$AJNA_SDK_PATH:/sdk:ro" -e PYTHONPATH=/sdk \
+    -v "$dir:/ajna-local" -e AJNA_LOCAL_DIR=/ajna-local \
+    --add-host host.docker.internal:host-gateway \
+    --entrypoint python "$img" -m ajna_cloud.kit_local "$@"
+}
+
+# The local stack takes its admin key from the shell (no default) and accepts kit proofs only
+# with these three switches. The key is this developer's own; it is never printed.
+ibex_kit_env() {
+  local key
+  key="$(kit_local admin-key --print)" || { warn "Cannot get the local admin key (kit tool)"; return 1; }
+  [ -n "$key" ] || { warn "The kit tool gave no local admin key"; return 1; }
+  export IBEX_ADMIN_KEY="$key"
+  export IBEX_TOKEN_AUTH=accept IBEX_TOKEN_SCOPE=enforce IBEX_KIT_PROOFS=on
+}
+
+# The app name of the kit keys: APP_PREFIX in .env, else the project name.
+_kit_app() {
+  local app
+  app=$(_env_val APP_PREFIX "$BACKEND_ENV" | tr -d ' ')
+  echo "${app:-$PROJECT_NAME}"
+}
+
+# Make and register this app's kit keys and install it for TENANT_ID (idempotent).
+ibex_kit_setup() {
+  local app tenant
+  app="$(_kit_app)"
+  tenant=$(_env_val TENANT_ID "$BACKEND_ENV" | tr -d ' ')
+  if [ -z "$tenant" ]; then
+    warn "TENANT_ID not found in .env: no kit keys registered (the app gets no tokens)"
+    return 0
+  fi
+  if kit_local setup --app "$app" --tenant "$tenant" --api-url "$IBEX_CONTAINER_URL" >/dev/null; then
+    info "Kit keys registered: $app for tenant $tenant"
+  else
+    warn "Kit key setup failed for $app (the reason is above). If the local stack was started"
+    warn "without kit tokens or with another admin key, restart it:"
+    warn "  docker compose -p ibex-db-local down   # then ./dev.sh start again"
+  fi
 }
 
 # Decide whether to use the local IbexDB stack. Honors IBEX_MODE (auto|local|remote):
@@ -409,6 +475,12 @@ ibex_start() {
     warn "  (clone failed or repos missing — check SSH access to github.com:ajnacloud-ksj)"
     return
   fi
+  # Before ANY `up` below: the stack reads its admin key and kit switches from this shell.
+  if ! ibex_kit_env; then
+    warn "IbexDB local stack not started — using remote IBEX_API_URL from .env"
+    IBEX_LAMBDA_PATH=""   # ibex_available is now false: inject_env leaves .env alone
+    return
+  fi
   # Self-heal (general, not service-specific): the shared IbexDB stack must NEVER
   # publish a host port that an app needs (PORT_BACKEND/PORT_UI) — its services
   # live on 9000/9005/9006/8181/8100. If ANY ibex-local-* container is squatting
@@ -431,6 +503,7 @@ ibex_start() {
   # fixed-name containers (container_name in the compose) would otherwise conflict.
   if curl -sf "$IBEX_LOCAL_URL/health" &>/dev/null; then
     info "IbexDB local stack already running at $IBEX_LOCAL_URL (reusing)"
+    ibex_kit_setup
     return
   fi
   # Clear any stale ibex-local-* containers (left by an interrupted run, or started
@@ -447,6 +520,7 @@ ibex_start() {
   done
   if curl -sf "$IBEX_LOCAL_URL/health" &>/dev/null; then
     info "IbexDB local stack ready at $IBEX_LOCAL_URL"
+    ibex_kit_setup
   else
     warn "IbexDB local stack did not become healthy in time — check: docker compose -p ibex-db-local logs"
   fi
@@ -504,6 +578,14 @@ ibex_inject_env() {
   info "IBEX_API_URL → $IBEX_CONTAINER_URL (local stack via host.docker.internal)"
   # No key: the SDK is token only. Drop one an older dev.sh wrote.
   _unset_env_kv IBEX_API_KEY
+  # Kit tokens: the backend signs with its runtime key, mounted read-only from AJNA_KIT_DIR
+  # (docker-compose.local.yml). The local cell is explicit: the SDK reads a cell from the data
+  # service only over https.
+  export AJNA_KIT_DIR="$HOME/.ajna/local/kit/$(_kit_app)"
+  _set_env_kv AJNA_WORKLOAD_PROOF kit
+  _set_env_kv AJNA_KIT_KEY_FILE /var/ajna-kit/runtime.pem
+  _set_env_kv AJNA_KIT_ROLE runtime
+  _set_env_kv IBEX_CELL_ID local:dev:local-1
 }
 
 # Restore the remote IBEX_API_URL from .env.example so stopping the local stack
@@ -517,6 +599,10 @@ ibex_restore_env() {
     info "IBEX_API_URL restored to remote: $remote_url"
   fi
   _unset_env_kv IBEX_API_KEY
+  local k
+  for k in AJNA_WORKLOAD_PROOF AJNA_KIT_KEY_FILE AJNA_KIT_ROLE IBEX_CELL_ID; do
+    _unset_env_kv "$k"
+  done
 }
 
 # Keep the UI's VITE_API_URL pointed at the ACTUAL backend port. dev.sh shifts the backend

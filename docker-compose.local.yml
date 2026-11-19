@@ -43,6 +43,9 @@ services:
       - ~/.aws:/root/.aws:ro
       # Tenant-plugins repo bind-mounted for hot-reloaded local dev (dev.sh sets LOCAL_PLUGINS_DIR).
       - ${LOCAL_PLUGINS_DIR:-./local-plugins}:/app/local-plugins:ro
+      # Kit tokens (local stack only): this app's own kit keys, read-only. dev.sh sets AJNA_KIT_DIR
+      # to ~/.ajna/local/kit/<app>; never the whole ~/.ajna/local, which holds the admin key.
+      - ${AJNA_KIT_DIR:-./.ajna-kit-none}:/var/ajna-kit:ro
     restart: unless-stopped
     healthcheck:
       test:
