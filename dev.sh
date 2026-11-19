@@ -339,7 +339,8 @@ kit_local() {
     warn "  Update it: git -C $AJNA_SDK_PATH pull"
     return 2
   fi
-  mkdir -p "$dir" && chmod 700 "$dir"
+  (umask 077 && mkdir -p "$dir")   # every level this makes is 0700 (~/.ajna too)
+  chmod 700 "$dir"
   docker run --rm -v "$AJNA_SDK_PATH:/sdk:ro" -e PYTHONPATH=/sdk \
     -v "$dir:/ajna-local" -e AJNA_LOCAL_DIR=/ajna-local \
     --add-host host.docker.internal:host-gateway \
@@ -375,7 +376,8 @@ ibex_kit_setup() {
   if kit_local setup --app "$app" --tenant "$tenant" --api-url "$IBEX_CONTAINER_URL" >/dev/null; then
     info "Kit keys registered: $app for tenant $tenant"
   else
-    warn "Kit key setup failed for $app. A stack started without kit tokens refuses it:"
+    warn "Kit key setup failed for $app (the reason is above). If the local stack was started"
+    warn "without kit tokens or with another admin key, restart it:"
     warn "  docker compose -p ibex-db-local down   # then ./dev.sh start again"
   fi
 }

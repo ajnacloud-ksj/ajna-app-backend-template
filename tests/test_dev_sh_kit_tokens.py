@@ -59,7 +59,8 @@ kit_local setup --app green-box --tenant acme
     assert "ghcr.io/ajnacloud-ksj/ajna-lambda-base:py312-4.3.0" in args
     tail = args[args.index("ajna_cloud.kit_local") - 1:]
     assert tail == ["-m", "ajna_cloud.kit_local", "setup", "--app", "green-box", "--tenant", "acme"]
-    assert oct((tmp_path / "home/.ajna/local").stat().st_mode & 0o777) == "0o700"
+    for level in ("home/.ajna", "home/.ajna/local"):
+        assert oct((tmp_path / level).stat().st_mode & 0o777) == "0o700", level
 
 
 @needs_bash
