@@ -5,22 +5,60 @@
     {
       "name": "app-jobs",
       "level": "job",
-      "tables": ["app_webhook_inbox"],
-      "ops": ["QUERY"],
-      "hard_delete": ["app_webhook_inbox"]
+      "tables": [
+        "app_webhook_inbox"
+      ],
+      "ops": [
+        "QUERY"
+      ],
+      "hard_delete": [
+        "app_webhook_inbox"
+      ]
     },
     {
       "name": "app-seed",
       "level": "job",
-      "tables": ["app_tenant_config"],
-      "ops": ["QUERY", "UPSERT"]
+      "tables": [
+        "app_tenant_config"
+      ],
+      "ops": [
+        "QUERY",
+        "UPSERT"
+      ]
     },
     {
       "name": "app-events",
       "level": "event",
-      "tables": ["app_webhook_inbox"]
+      "tables": [
+        "app_webhook_inbox"
+      ]
     }
   ],
   "public": {},
-  "platform_ops": []
+  "platform_ops": [],
+  "jobs": [
+    {
+      "kind": "scheduled",
+      "name": "nightly-housekeeping",
+      "schedule": "15 3 * * *",
+      "service_user": "app-jobs"
+    },
+    {
+      "kind": "seed",
+      "service_user": "app-seed"
+    }
+  ],
+  "default_role": {
+    "column_mask": {},
+    "default_access": "r",
+    "features": [],
+    "is_default": true,
+    "role_id": "user",
+    "role_name": "User",
+    "row_filters": [],
+    "table_access": {
+      "app_items": "r",
+      "app_tenant_field_config": "r"
+    }
+  }
 }

@@ -19,9 +19,10 @@ from tests.conftest import (
 
 SCHEMAS = REPO_ROOT / "src" / "schemas"
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
-# The top-level keys every SDK 4.x accepts. "jobs" is NOT one of them before ajna-cloud 4.3.0:
-# an older SDK refuses an unknown top-level key, so the app would not start.
-_SDK4_TOP_KEYS = {"app", "version", "service_users", "public", "platform_ops"}
+# The top-level keys of the manifest. "jobs" (ajna-cloud >= 4.3.0) declares every self job the app
+# registers, and "default_role" (#1554) is the role a new member gets; the base image's SDK
+# (py312-4.7.1) accepts both.
+_TOP_KEYS = {"app", "version", "service_users", "public", "platform_ops", "jobs", "default_role"}
 
 
 @pytest.fixture(scope="module")
@@ -62,9 +63,8 @@ def test_tests_read_the_one_manifest(manifest):
     assert manifest.digest() == expected.digest()
 
 
-def test_only_keys_every_sdk4_accepts():
-    """No "jobs" key until the SDK 4.3.0 bump (docs/MANIFEST_JOBS.md in ajna-cloud-sdk)."""
-    assert set(_raw()) <= _SDK4_TOP_KEYS
+def test_the_manifest_has_exactly_the_known_keys():
+    assert set(_raw()) == _TOP_KEYS
 
 
 def test_the_image_ships_it_next_to_the_handler():
@@ -153,3 +153,38 @@ def test_an_undeclared_user_is_refused_at_import():
     with pytest.raises(ValueError):
         check_service_user(SU.EVENT_USER, target="self", job="x")   # an event user is no job
     assert check_service_user(SU.JOB_USER, target="self", job="x") == SU.JOB_USER
+
+
+# ── jobs: every job the code registers is declared (SDK >= 4.3.0) ─────────────
+
+def test_every_registered_job_is_declared():
+    """The SDK's own check, the one _register_jobs runs first: a mismatch answers
+    JOBS_NOT_DECLARED and registers nothing (ajna_cloud/register_jobs.py)."""
+    import src.app as app_module
+    from ajna_cloud import app as A
+    from ajna_cloud.scheduler import declared_job_problems
+
+    seed_user = app_module._db_admin.seed_service_user if app_module._db_admin.seed_fn else None
+    assert declared_job_problems(list(A._scheduled_intents), seed_user) == []
+
+
+def test_the_declared_jobs_are_the_housekeeping_job_and_the_seed(manifest):
+    from src.handlers import housekeeping
+
+    assert sorted(_raw()["jobs"], key=lambda j: j["kind"]) == [
+        {"kind": "scheduled", "name": housekeeping.HOUSEKEEPING_JOB,
+         "schedule": housekeeping.HOUSEKEEPING_CRON, "service_user": SU.JOB_USER},
+        {"kind": "seed", "service_user": SU.SEED_USER},
+    ]
+
+
+def test_an_undeclared_scheduled_job_is_a_problem():
+    """The check bites: a job the manifest does not name is reported."""
+    from ajna_cloud.scheduler import declared_job_problems
+
+    rogue = {"name": "not-declared", "cron": "0 1 * * *",
+             "opts": {"service_user": SU.JOB_USER, "target": "self"}}
+    import src.app  # noqa: F401 - registers the real jobs
+    from ajna_cloud import app as A
+
+    assert declared_job_problems(list(A._scheduled_intents) + [rogue], SU.SEED_USER)
