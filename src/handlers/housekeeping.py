@@ -14,7 +14,9 @@ retention into the drain (see plant-manager-backend ``src/handlers/webhook_inbox
 
 To add a job: write a function ``(event, context) -> dict``, decorate it with
 ``@scheduled(<5-field UTC cron>, name=<job name>, service_user=JOB_USER)``, import its module in
-``src/app.py``, and add the tables it uses to the job user in ``ajna.manifest.json``.
+``src/app.py``, add the tables it uses to the job user in ``ajna.manifest.json``, and declare it
+in the manifest ``jobs`` (``{"kind": "scheduled", "name", "schedule", "service_user"}``): an
+undeclared job fails register_jobs with JOBS_NOT_DECLARED (tests/test_manifest.py checks it).
 """
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
