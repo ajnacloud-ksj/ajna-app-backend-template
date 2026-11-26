@@ -1,7 +1,8 @@
 # {{app-name}} — Backend
 
 Python Lambda backend (FastAPI shim for local dev) for the **{{app-name}}** app on the
-Ajna platform. Data is stored in IbexDB via the `ajna-cloud-sdk`; auth is AWS Cognito.
+Ajna platform. Data is stored in IbexDB via the `ajna-cloud-sdk`. People sign in at the
+platform portal (see "Sign-in" below).
 
 The local stack runs the **real Lambda handler** (`src/app.py`) wrapped by a FastAPI
 hot-reload server, plus the UI, both in Docker.
@@ -37,8 +38,9 @@ parent/
 ```bash
 # 1. From this directory:
 cp .env.example .env
-#    Edit .env and set the Cognito values for your app. There is NO IbexDB key: the SDK
-#    (ajna-cloud 4.x) is token only (see "Data access: token only" below).
+#    Edit .env and set the Cognito pool values for your app (token verification only).
+#    There is NO IbexDB key: the SDK (ajna-cloud 4.x) is token only (see "Data access: token
+#    only" below).
 
 # 2. Start the full stack (backend + UI, hot-reload):
 ./dev.sh start
@@ -53,13 +55,14 @@ UI       →  http://localhost:5173
 API docs →  http://localhost:8000/docs
 ```
 
-Sign in at the UI with your own dev Cognito user. Get the login from the team
-password manager, or ask an admin to create a user for you in the dev Cognito pool.
-Never commit a login to this repo.
+### Sign-in
 
-| User | Password | Role |
-|------|----------|------|
-| `<your-dev-email>` | `<your-dev-password>` | super_admin (or the role you need) |
+People sign in at the platform portal; the app never sees a password. Local dev: the Keycloak
+kit (coming in the next template PR). Until then, use a dev session from the deployed dev app.
+
+The app serves no password route: the SDK switch (`src/handlers/auth.py`) and
+`src/handlers/password_door.py` make each one answer 410 `PASSWORD_SIGN_IN_CLOSED`, and
+`tests/test_password_door_closed.py` fails if one comes back.
 
 ### Commands
 
@@ -76,16 +79,15 @@ Never commit a login to this repo.
 
 ## Do I need AWS credentials?
 
-**No — not for normal local development.** Login and all data CRUD work with **no AWS
-credentials**:
+**No — not for normal local development.** Token verification and all data CRUD work with
+**no AWS credentials**:
 
-- **Login** uses Cognito `initiate_auth` (USER_PASSWORD_AUTH), an *unsigned* API.
 - **Token verification** fetches Cognito's public JWKS over HTTPS and verifies locally.
 - **Data CRUD** goes to IbexDB over HTTPS with a short session token per actor, never a key
   (see "Data access: token only" below).
 
 The **only** features that need AWS credentials are the **User Management** admin screens
-(create / list / disable users), which call signed Cognito `admin_*` APIs. If you use those,
+(invite / list / lock users), which call the signed user-admin APIs. If you use those,
 configure dev-account credentials in `~/.aws` (the local stack mounts it read-only).
 
 ---
@@ -153,7 +155,8 @@ src/
 │   └── sanitize.py         # Input sanitisation helpers
 ├── handlers/
 │   ├── health.py           # /health, /ready, /status
-│   ├── auth.py             # login / me / permissions
+│   ├── auth.py             # me / permissions / logout (password door closed)
+│   ├── password_door.py    # closes every password route (410)
 │   ├── admin.py            # tenant read/update + RBAC management, DEFAULT_ROLES
 │   ├── housekeeping.py     # EXAMPLE @scheduled job (webhook inbox retention)
 │   ├── users.py            # tenant-scoped user management + sync
@@ -193,7 +196,7 @@ README one level up for the full add-an-entity cycle.
 | `AJNA_DATA_AREA` | `per-app` — tenant data in `{tenant}_{app namespace}` (the default for new apps, same as the deployed app) |
 | `APP_NAME` | `{{app-name}}` — the cockpit app name; gives the per-app namespace |
 | `AUTH_MODE` | `cognito` |
-| `COGNITO_USER_POOL_ID` / `COGNITO_CLIENT_ID` / `COGNITO_REGION` | Cognito pool |
+| `COGNITO_USER_POOL_ID` / `COGNITO_CLIENT_ID` / `COGNITO_REGION` | Cognito pool (session token verification) |
 | `APP_PREFIX` | `{{app-name}}` — resolves tenant from a user's Cognito group |
 | `IBEX_RBAC_ENABLED` / `IBEX_AUDIT_ENABLED` | RBAC + audit logging |
 
@@ -214,5 +217,5 @@ and bump `sdk-version` in `.github/workflows/deploy-backend.yml` to upgrade the 
 
 - **Port already in use** — `dev.sh` auto-shifts to the next free port; check the printed URLs.
 - **SDK not found** — clone it (see Prerequisites) or set `AJNA_SDK_PATH`.
-- **401 on data calls** — sign in first; the dev stack uses real Cognito auth.
+- **401 on data calls** — the call has no session; see "Sign-in" above.
 - **CORS errors** — leave `CORS_ALLOWED_ORIGINS` unset locally; the SDK reflects the UI origin.

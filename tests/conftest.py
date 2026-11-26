@@ -17,12 +17,12 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # Force cognito auth mode for tests. The SDK auth handler defaults AUTH_MODE to
-# 'local' (handlers/auth.py), which bypasses password validation and returns a
-# fixed local user — so the mock_cognito_login() path (which patches boto3 +
-# AuthFactory) is only exercised in cognito mode. pytest does not load .env, so
-# we set it here before any handler module is imported. The COGNITO_* values are
-# placeholders; boto3 and the auth provider are mocked, so they are never used
-# for real calls — they only need to be present.
+# 'local' (handlers/auth.py), which skips token verification and returns a fixed
+# local user — so the mock_cognito_pool() path (real token verification against a
+# test JWKS) is only exercised in cognito mode. pytest does not load .env, so we set
+# it here before any handler module is imported. The COGNITO_* values are
+# placeholders; boto3 and the JWKS fetch are mocked, so they are never used for real
+# calls — they only need to be present.
 os.environ["AUTH_MODE"] = "cognito"
 os.environ.setdefault("COGNITO_REGION", "ap-south-1")
 os.environ.setdefault("COGNITO_CLIENT_ID", "test-client-id")
@@ -166,14 +166,14 @@ def as_role(role: str, tenant_id: str = "acme", user_id: str = "u-test"):
         yield
 
 
-# ── Cognito mock for auth tests ───────────────────────────────────────────────
-# Maps username → {role, tenant_id, email}. Used by mock_cognito_login context.
+# ── Cognito pool mock for auth tests ──────────────────────────────────────────
+# Maps username → {role, tenant_id}. The app has no password door: people sign in at the
+# platform portal, so the tests mint the session token that the portal sign-in would give.
 _COGNITO_USERS = {
-    "admin":      {"role": "super_admin", "tenant_id": "acme", "email": "admin@localhost"},
-    "org_admin":  {"role": "admin",       "tenant_id": "acme", "email": "org_admin@localhost"},
-    "member":     {"role": "user",        "tenant_id": "acme", "email": "member@localhost"},
+    "admin":      {"role": "super_admin", "tenant_id": "acme"},
+    "org_admin":  {"role": "admin",       "tenant_id": "acme"},
+    "member":     {"role": "user",        "tenant_id": "acme"},
 }
-_VALID_PASSWORD = "password123"
 
 
 # A test RSA key pair stands in for the Cognito user pool's signing key. /v1/auth/me
@@ -210,61 +210,46 @@ def _make_test_signing_key():
 _TEST_PRIVATE_PEM, _TEST_JWKS = _make_test_signing_key()
 
 
-@contextmanager
-def mock_cognito_login():
-    """
-    Patches boto3 and the JWKS fetch so the SDK's Cognito auth path works without a real pool.
-
-    Login (ajna_cloud.handlers.auth) reads role+tenant from the ``cognito:groups``
-    claim of the AccessToken, which Cockpit provisions as ``{APP_PREFIX}-{tenant_id}-{role}``.
-    /me then verifies that AccessToken against the pool's JWKS before it trusts any
-    claim, so the mock returns RS256 tokens signed by the test key, with the pool
-    issuer, ``token_use=access`` and the app client id — the claims a real Cognito
-    AccessToken carries.
-    """
+def _jwt(claims: Dict[str, Any]) -> str:
     import time
 
     from jose import jwt as jose_jwt
 
-    def _jwt(claims: Dict[str, Any]) -> str:
-        now = int(time.time())
-        base = {"iss": _TEST_ISSUER, "iat": now, "exp": now + 3600}
-        return jose_jwt.encode({**base, **claims}, _TEST_PRIVATE_PEM, algorithm="RS256",
-                               headers={"kid": _TEST_KID})
+    now = int(time.time())
+    base = {"iss": _TEST_ISSUER, "iat": now, "exp": now + 3600}
+    return jose_jwt.encode({**base, **claims}, _TEST_PRIVATE_PEM, algorithm="RS256",
+                           headers={"kid": _TEST_KID})
 
-    def fake_initiate_auth(**kwargs):
-        params = kwargs.get("AuthParameters", {})
-        username = params.get("USERNAME", "")
-        password = params.get("PASSWORD", "")
-        if username not in _COGNITO_USERS or password != _VALID_PASSWORD:
-            from botocore.exceptions import ClientError
-            raise ClientError(
-                {"Error": {"Code": "NotAuthorizedException", "Message": "Incorrect username or password."}},
-                "InitiateAuth",
-            )
-        user = _COGNITO_USERS[username]
-        # Plain concatenation, not an f-string literal: in an f-string the template
-        # placeholder's doubled braces collapse to single ones, so the group would no
-        # longer match the prefix that src/handlers/auth.py parses with.
-        group = "-".join([APP_PREFIX, user["tenant_id"], user["role"]])
-        access_token = _jwt({
-            "sub": username,
-            "username": username,
-            "token_use": "access",
-            "client_id": os.environ["COGNITO_CLIENT_ID"],
-            "cognito:groups": [group],
-        })
-        id_token = _jwt({
-            "sub": username,
-            # The SDK reports user.username from the IdToken email claim (_build_result),
-            # and test_login_returns_token_for_all_roles expects the login name there.
-            "email": username,
-            "cognito:username": username,
-            "token_use": "id",
-            "aud": os.environ["COGNITO_CLIENT_ID"],
-        })
-        return {"AuthenticationResult": {"AccessToken": access_token, "IdToken": id_token, "ExpiresIn": 3600}}
 
+def access_token(username: str) -> str:
+    """An RS256 AccessToken for a test user, signed by the test pool key.
+
+    It carries the claims a real Cognito AccessToken carries: the pool issuer,
+    ``token_use=access``, the app client id, and the ``cognito:groups`` claim the cockpit
+    provisions as ``{APP_PREFIX}-{tenant_id}-{role}``.
+    """
+    user = _COGNITO_USERS[username]
+    # Plain concatenation, not an f-string literal: in an f-string the template
+    # placeholder's doubled braces collapse to single ones, so the group would no
+    # longer match the prefix that the SDK parses with.
+    group = "-".join([APP_PREFIX, user["tenant_id"], user["role"]])
+    return _jwt({
+        "sub": username,
+        "username": username,
+        "token_use": "access",
+        "client_id": os.environ["COGNITO_CLIENT_ID"],
+        "cognito:groups": [group],
+    })
+
+
+@contextmanager
+def mock_cognito_pool():
+    """
+    Patches boto3 and the JWKS fetch so the SDK verifies tokens without a real pool.
+
+    /me verifies the AccessToken against the pool's JWKS before it trusts any claim, so
+    the JWKS served here holds the test key that :func:`access_token` signs with.
+    """
     def fake_requests_get(url, *args, **kwargs):
         # Only the user pool's JWKS is served. Any other URL fails the test loudly
         # instead of reaching the network.
@@ -276,7 +261,6 @@ def mock_cognito_login():
         return response
 
     mock_client = MagicMock()
-    mock_client.initiate_auth.side_effect = fake_initiate_auth
     # me() and the provider look up the email best-effort (admin_get_user / get_user);
     # let both fail so the SDK takes its no-email fallback (auth tests do not assert on email).
     mock_client.admin_get_user.side_effect = Exception("admin_get_user not mocked")

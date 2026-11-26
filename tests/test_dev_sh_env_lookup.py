@@ -2,7 +2,7 @@
 
 A bare `$(grep "^KEY=" .env | cut -d= -f2-)` exits the whole script with no message when the
 line (or the file) is missing. Every lookup goes through `_env_val`, which returns empty instead,
-and the caller then says which setting is missing (for example DEV_LOGIN_EMAIL).
+and the caller then says which setting is missing (for example TENANT_ID).
 """
 import re
 import shutil
@@ -32,15 +32,15 @@ def test_no_raw_env_lookups():
 @pytest.mark.parametrize("content, expected", [
     ("OTHER=1\n", ""),                       # the line is missing
     (None, ""),                              # the file is missing
-    ("DEV_LOGIN_EMAIL=me@example.com\nDEV_LOGIN_EMAIL=second\n", "me@example.com"),
-    ("DEV_LOGIN_EMAIL=a=b\n", "a=b"),        # the value keeps its own '='
+    ("TENANT_ID=acme\nTENANT_ID=second\n", "acme"),
+    ("TENANT_ID=a=b\n", "a=b"),        # the value keeps its own '='
 ])
 def test_env_val_survives_strict_mode(tmp_path, content, expected):
     env = tmp_path / ".env"
     if content is not None:
         env.write_text(content, encoding="utf-8")
     script = (f"set -euo pipefail\n{_helper()}\n"
-              f'v=$(_env_val DEV_LOGIN_EMAIL "{env}")\necho "reached:[$v]"\n')
+              f'v=$(_env_val TENANT_ID "{env}")\necho "reached:[$v]"\n')
     out = subprocess.run([str(BASH), "-c", script], capture_output=True, text=True, timeout=20)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == f"reached:[{expected}]"
