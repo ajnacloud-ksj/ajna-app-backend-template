@@ -35,19 +35,21 @@ def _bin(tmp_path: Path, curl_status: Optional[str] = None) -> Path:
         (bindir / tool).symlink_to(str(shutil.which(tool)))
     if curl_status is not None:
         curl = bindir / "curl"
-        # Login call: answer a token. Setup call (-o FILE -w FMT): write a body, print the status.
+        # The setup call (-o FILE -w FMT): write a body, print the status. Every call is logged,
+        # so a test can prove that db-setup makes no sign-in call.
+        log = bindir.parent / "curl.log"
         curl.write_text(f"""#!{BASH}
+echo "$*" >> "{log}"
 out=""; prev=""
 for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
 if [ -n "$out" ]; then echo '{{"ok": true}}' > "$out"; printf '%s' '{curl_status}'
-else cat >/dev/null; echo '{{"access_token": "t"}}'; fi
+else exit 7; fi
 """)
         curl.chmod(0o755)
     return bindir
 
 
-def _run(tmp_path: Path, bindir: Path, env_lines: str = "DEV_LOGIN_EMAIL=me@example.com\n"
-         "DEV_LOGIN_PASSWORD=pw\nTENANT_ID=acme\n"):
+def _run(tmp_path: Path, bindir: Path, env_lines: str = "TENANT_ID=acme\n"):
     env_file = tmp_path / ".env"
     env_file.write_text(env_lines, encoding="utf-8")
     marker = tmp_path / ".db_setup_done"
@@ -86,8 +88,15 @@ def test_missing_curl_is_an_error_not_a_silent_success(tmp_path):
     assert not marker.exists()
 
 
-def test_missing_login_settings_are_named_and_the_call_still_runs(tmp_path):
+def test_a_missing_tenant_is_named_and_the_call_still_runs(tmp_path):
     out, marker = _run(tmp_path, _bin(tmp_path, "200"), env_lines="OTHER=1\n")
-    assert "DEV_LOGIN_EMAIL / DEV_LOGIN_PASSWORD not set" in out.stdout
     assert "TENANT_ID not found" in out.stdout
     assert "RC=0" in out.stdout and marker.exists()
+
+
+def test_db_setup_makes_only_the_setup_call_and_says_where_sign_in_went(tmp_path):
+    out, _ = _run(tmp_path, _bin(tmp_path, "200"))
+    calls = (tmp_path / "curl.log").read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1 and "/v1/admin/database/setup" in calls[0], calls
+    assert "Authorization" not in calls[0]
+    assert "local sign-in is the Keycloak kit (./dev.sh login <person>)" in out.stdout

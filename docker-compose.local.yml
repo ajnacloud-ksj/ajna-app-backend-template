@@ -27,7 +27,23 @@ services:
         # SDK 4 is token only: no IbexDB key anywhere (see .env.example). A dev build tag
         # (py312-X.Y.Z.devN) is accepted: it is the PEP 440 version CodeArtifact holds.
         BASE_IMAGE: ghcr.io/ajnacloud-ksj/ajna-lambda-base:py312-4.7.1
-    # The dev stage's CMD already runs uvicorn --reload; no entrypoint/command override needed.
+    # The dev stage's uvicorn --reload, after one step for local sign-in: when dev.sh mounts an
+    # ajna-cloud-bricks clone (AJNA_LOCAL_SIGNIN=keycloak), install it (--no-deps, no index), so
+    # that the SDK finds the `oidc` login brick that verifies the local Keycloak tokens.
+    command:
+      - sh
+      - -c
+      - |
+        if [ -f /opt/ajna-cloud-bricks/pyproject.toml ]; then
+          rm -rf /tmp/bricks && mkdir -p /tmp/bricks &&
+          cp -r /opt/ajna-cloud-bricks/pyproject.toml /opt/ajna-cloud-bricks/README.md /opt/ajna-cloud-bricks/ajna_cloud_bricks /opt/ajna-cloud-bricks/bricks /tmp/bricks/ &&
+          SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0+local PIP_CONFIG_FILE=/dev/null pip install --quiet --no-deps --no-build-isolation --no-index /tmp/bricks ||
+          { echo "could not install ajna-cloud-bricks from /opt/ajna-cloud-bricks" >&2; exit 1; }
+        fi
+        exec python -m uvicorn local_dev:app --host 0.0.0.0 --port 8000 --reload --reload-dir /var/task/src
+    # The local issuer host (dev.sh sets it with the Keycloak kit on) reaches the kit on the host.
+    extra_hosts:
+      - "${AJNA_KEYCLOAK_HOST:-keycloak.invalid}:host-gateway"
     ports:
       - "${PORT_BACKEND:-8000}:8000"
     env_file:
@@ -41,6 +57,9 @@ services:
       # AWS creds: local talks to the REAL shared dev Cognito pool (true parity). Each dev
       # needs their own scoped creds in ~/.aws. IbexDB/S3/DynamoDB still run fully local.
       - ~/.aws:/root/.aws:ro
+      # Local sign-in (dev.sh): the local CA bundle, and the ajna-cloud-bricks clone (read only).
+      - ./.dev/certs:/certs:ro
+      - ${AJNA_BRICKS_DIR:-./.dev/no-bricks}:/opt/ajna-cloud-bricks:ro
       # Tenant-plugins repo bind-mounted for hot-reloaded local dev (dev.sh sets LOCAL_PLUGINS_DIR).
       - ${LOCAL_PLUGINS_DIR:-./local-plugins}:/app/local-plugins:ro
     restart: unless-stopped

@@ -11,7 +11,7 @@ import json
 import pytest
 
 from src.app import router
-from src.handlers import auth
+from src.handlers import auth, password_door
 
 
 def _auth_route_keys(table):
@@ -27,15 +27,21 @@ def test_every_sdk_auth_route_is_served():
 
 
 def test_auth_routes_map_to_the_sdk_handlers():
+    # The password keys answer 410 and /v1/auth/config is wrapped (src/handlers/password_door.py,
+    # checked in tests/test_password_door_closed.py); every other auth key is the SDK's handler.
     table = router.route_table
     for key, handler in auth.routes.items():
+        if password_door.is_closed_route(key) or key == ('GET', '/v1/auth/config'):
+            continue
         assert table[key] == handler, f"{key} is not wired to the SDK handler"
 
 
 @pytest.mark.parametrize("key", [
-    ('POST', '/v1/auth/login'),
-    ('POST', '/v1/auth/refresh'),
     ('POST', '/v1/auth/logout'),
+    ('GET',  '/v1/auth/oidc/start'),
+    ('GET',  '/v1/auth/oidc/callback'),
+    ('POST', '/v1/auth/oidc/token'),
+    ('POST', '/v1/auth/oidc/refresh'),
     ('GET',  '/v1/auth/me'),
     ('GET',  '/v1/auth/permissions'),
 ])
@@ -63,10 +69,7 @@ def test_post_logout_dispatches_instead_of_404():
     assert json.loads(resp["body"]).get("ok") is True
 
 
-def test_password_policy_route_follows_the_sdk():
-    """Served exactly when the SDK provides the handler, so an older base image still boots."""
-    from src.handlers import users
-    key = ('GET', '/v1/users/password-policy')
-    assert (key in router.route_table) == (users.password_policy is not None)
-    if users.password_policy is not None:
-        assert router.route_table[key] == users.password_policy
+def test_the_users_password_routes_are_not_served():
+    """Sign-in is the platform's: no users route resets a sign-in or reads its rule (#647)."""
+    assert ('POST', '/v1/users/{username}/reset-password') not in router.route_table
+    assert ('GET', '/v1/users/password-policy') not in router.route_table

@@ -1,7 +1,8 @@
 # {{app-name}} — Backend
 
 Python Lambda backend (FastAPI shim for local dev) for the **{{app-name}}** app on the
-Ajna platform. Data is stored in IbexDB via the `ajna-cloud-sdk`; auth is AWS Cognito.
+Ajna platform. Data is stored in IbexDB via the `ajna-cloud-sdk`. People sign in at the
+platform portal (see "Sign-in" below).
 
 The local stack runs the **real Lambda handler** (`src/app.py`) wrapped by a FastAPI
 hot-reload server, plus the UI, both in Docker.
@@ -37,8 +38,10 @@ parent/
 ```bash
 # 1. From this directory:
 cp .env.example .env
-#    Edit .env and set the Cognito values for your app. There is NO IbexDB key: the SDK
-#    (ajna-cloud 4.x) is token only (see "Data access: token only" below).
+#    Local sign-in needs no edit: dev.sh starts the Keycloak kit and writes its login settings.
+#    (Mode 2 only: set the dev Cognito pool values, see "Local development: sign-in".)
+#    There is NO IbexDB key: the SDK (ajna-cloud 4.x) is token only (see "Data access: token
+#    only" below).
 
 # 2. Start the full stack (backend + UI, hot-reload):
 ./dev.sh start
@@ -53,13 +56,47 @@ UI       →  http://localhost:5173
 API docs →  http://localhost:8000/docs
 ```
 
-Sign in at the UI with your own dev Cognito user. Get the login from the team
-password manager, or ask an admin to create a user for you in the dev Cognito pool.
-Never commit a login to this repo.
+### Local development: sign-in
 
-| User | Password | Role |
-|------|----------|------|
-| `<your-dev-email>` | `<your-dev-password>` | super_admin (or the role you need) |
+People sign in at the platform portal; the app never sees a password. Locally there are two modes.
+
+**Mode 1 (default, offline): the Keycloak kit.** `./dev.sh start` starts the local IbexDB stack
+AND the Keycloak kit of `ajna-cloud-bricks` (`$AJNA_BRICKS_DIR`, default
+`$IBEX_BASE/ajna-cloud-bricks`, else `~/ajna/platform/ajna-cloud-bricks`). The kit is reused from
+that clone by path (`examples/testapp/keycloak/compose.yaml`), never copied.
+`./dev.sh keycloak` starts only the kit.
+
+- `scripts/local_realm.py` writes the realm `.dev/realm.json` from `ALL_ROLES` in
+  `src/config/roles.py`: a public client for the SDK's sign-in routes (`/v1/auth/oidc/*`), the
+  groups `<APP_PREFIX>-<tenant>-<role>` for the orgs `acme` and `beta`, and three test persons:
+  `admin@acme.local`, `user@acme.local` and `admin@beta.local`.
+- Each person's sign-in secret is generated on THIS machine at the first run and kept in
+  `.dev/keycloak-users.txt` (mode 0600). `.dev/` is gitignored. The realm file holds no secret:
+  `scripts/local_keycloak.py seed` sets them through the Keycloak admin API. Re-runs keep them;
+  delete the file to make new ones.
+- `./dev.sh login <person>` prints the person's org, role, group and sign-in link, and where the
+  secrets file is. Nothing prints the secret itself.
+- `dev.sh` writes the backend `.env` for the SDK `oidc` login brick (`AJNA_LOGIN_ADAPTER=oidc`,
+  `AUTH_MODE=oidc`, `AJNA_LOGIN_OIDC_ISSUER`, `AJNA_LOGIN_OIDC_AUDIENCE`, the local CA bundle),
+  and the backend container installs the brick from the same `ajna-cloud-bricks` clone. The
+  tokens are real OIDC tokens on the same SDK path as dev and prod: there is no bypass.
+- The issuer is `https://keycloak.localtest.me:18643/realms/<APP_PREFIX>` (`localtest.me`
+  resolves to 127.0.0.1). No committed file outside `dev.sh`, `scripts/local_realm.py` and the docs
+  may name a local issuer (`tests/test_no_local_issuer.py`).
+- **Not yet:** the browser sign-in through the backend (`/v1/auth/oidc/start`) waits on an SDK
+  change: the SDK sign-in routes accept only the cockpit issuer and an `https://` door. Until then
+  the kit proves the token path (Keycloak form → token → `GET /v1/auth/me`), and a browser session
+  uses mode 2.
+
+**Mode 2: end to end against dev** (`AJNA_LOCAL_SIGNIN=dev ./dev.sh start`). The local UI and
+backend sign in through the real dev platform sign-in, with the dev Cognito pool values in
+`.env.example`. Use it for MFA, the invite first sign-in and forgot-secret flows: they need real
+Cognito. It needs a dev test org whose admin adds you through the Members page. There is no
+shared dev login.
+
+The app serves no password route: the SDK switch (`src/handlers/auth.py`) and
+`src/handlers/password_door.py` make each one answer 410 `PASSWORD_SIGN_IN_CLOSED`, and
+`tests/test_password_door_closed.py` fails if one comes back.
 
 ### Commands
 
@@ -70,22 +107,23 @@ Never commit a login to this repo.
 ./dev.sh restart backend     # rebuild + restart one service
 ./dev.sh stop                # stop everything
 ./dev.sh db-setup            # (re)create tables — idempotent
+./dev.sh login <person>      # local sign-in link of a test person (Keycloak kit)
+./dev.sh keycloak            # start only the Keycloak kit
 ```
 
 ---
 
 ## Do I need AWS credentials?
 
-**No — not for normal local development.** Login and all data CRUD work with **no AWS
-credentials**:
+**No — not for normal local development.** Token verification and all data CRUD work with
+**no AWS credentials**:
 
-- **Login** uses Cognito `initiate_auth` (USER_PASSWORD_AUTH), an *unsigned* API.
 - **Token verification** fetches Cognito's public JWKS over HTTPS and verifies locally.
 - **Data CRUD** goes to IbexDB over HTTPS with a short session token per actor, never a key
   (see "Data access: token only" below).
 
 The **only** features that need AWS credentials are the **User Management** admin screens
-(create / list / disable users), which call signed Cognito `admin_*` APIs. If you use those,
+(invite / list / lock users), which call the signed user-admin APIs. If you use those,
 configure dev-account credentials in `~/.aws` (the local stack mounts it read-only).
 
 ---
@@ -153,7 +191,8 @@ src/
 │   └── sanitize.py         # Input sanitisation helpers
 ├── handlers/
 │   ├── health.py           # /health, /ready, /status
-│   ├── auth.py             # login / me / permissions
+│   ├── auth.py             # me / permissions / logout (password door closed)
+│   ├── password_door.py    # closes every password route (410)
 │   ├── admin.py            # tenant read/update + RBAC management, DEFAULT_ROLES
 │   ├── housekeeping.py     # EXAMPLE @scheduled job (webhook inbox retention)
 │   ├── users.py            # tenant-scoped user management + sync
@@ -193,7 +232,7 @@ README one level up for the full add-an-entity cycle.
 | `AJNA_DATA_AREA` | `per-app` — tenant data in `{tenant}_{app namespace}` (the default for new apps, same as the deployed app) |
 | `APP_NAME` | `{{app-name}}` — the cockpit app name; gives the per-app namespace |
 | `AUTH_MODE` | `cognito` |
-| `COGNITO_USER_POOL_ID` / `COGNITO_CLIENT_ID` / `COGNITO_REGION` | Cognito pool |
+| `COGNITO_USER_POOL_ID` / `COGNITO_CLIENT_ID` / `COGNITO_REGION` | Cognito pool (session token verification) |
 | `APP_PREFIX` | `{{app-name}}` — resolves tenant from a user's Cognito group |
 | `IBEX_RBAC_ENABLED` / `IBEX_AUDIT_ENABLED` | RBAC + audit logging |
 
@@ -214,5 +253,5 @@ and bump `sdk-version` in `.github/workflows/deploy-backend.yml` to upgrade the 
 
 - **Port already in use** — `dev.sh` auto-shifts to the next free port; check the printed URLs.
 - **SDK not found** — clone it (see Prerequisites) or set `AJNA_SDK_PATH`.
-- **401 on data calls** — sign in first; the dev stack uses real Cognito auth.
+- **401 on data calls** — the call has no session; see "Sign-in" above.
 - **CORS errors** — leave `CORS_ALLOWED_ORIGINS` unset locally; the SDK reflects the UI origin.
