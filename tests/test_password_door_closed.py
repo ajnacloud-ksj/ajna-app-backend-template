@@ -198,8 +198,8 @@ ALLOWED_HITS: dict = {
     ("src/handlers/password_door.py", "/v1/auth/login"): "the closed-route list",
 }
 
-SCANNED_DIRS = ("src", "scripts", "ci", "docs")
-SCANNED_FILES = ("dev.sh", ".env.example", "README.md")
+SCANNED_DIRS = ("src", "scripts", "ci", "docs", ".github")
+SCANNED_FILES = ("dev.sh", ".env.example", "README.md", "docker-compose.local.yml", "Dockerfile")
 
 
 def _scanned_files():
@@ -226,6 +226,14 @@ def test_the_template_has_no_password_sign_in():
         rel = str(path.relative_to(REPO))
         hits.extend(_hits(path.read_text(encoding="utf-8", errors="replace"), rel))
     assert not hits, "password sign-in in the template:\n" + "\n".join(hits)
+
+
+def test_the_scan_covers_the_local_sign_in_files():
+    # The Keycloak kit wiring must stay inside the scan, so a shared dev login cannot come back
+    # through it (a DEV_LOGIN_* fallback in dev.sh, the realm script or the local compose file).
+    rels = {str(p.relative_to(REPO)) for p in _scanned_files()}
+    assert {"dev.sh", "scripts/local_realm.py", "scripts/local_keycloak.py",
+            "docker-compose.local.yml", ".env.example"} <= rels
 
 
 def test_every_allowed_hit_is_still_there():

@@ -38,7 +38,8 @@ parent/
 ```bash
 # 1. From this directory:
 cp .env.example .env
-#    Edit .env and set the Cognito pool values for your app (token verification only).
+#    Local sign-in needs no edit: dev.sh starts the Keycloak kit and writes its login settings.
+#    (Mode 2 only: set the dev Cognito pool values, see "Local development: sign-in".)
 #    There is NO IbexDB key: the SDK (ajna-cloud 4.x) is token only (see "Data access: token
 #    only" below).
 
@@ -55,10 +56,43 @@ UI       →  http://localhost:5173
 API docs →  http://localhost:8000/docs
 ```
 
-### Sign-in
+### Local development: sign-in
 
-People sign in at the platform portal; the app never sees a password. Local dev: the Keycloak
-kit (coming in the next template PR). Until then, use a dev session from the deployed dev app.
+People sign in at the platform portal; the app never sees a password. Locally there are two modes.
+
+**Mode 1 (default, offline): the Keycloak kit.** `./dev.sh start` starts the local IbexDB stack
+AND the Keycloak kit of `ajna-cloud-bricks` (`$AJNA_BRICKS_DIR`, default
+`$IBEX_BASE/ajna-cloud-bricks`, else `~/ajna/platform/ajna-cloud-bricks`). The kit is reused from
+that clone by path (`examples/testapp/keycloak/compose.yaml`), never copied.
+`./dev.sh keycloak` starts only the kit.
+
+- `scripts/local_realm.py` writes the realm `.dev/realm.json` from `ALL_ROLES` in
+  `src/config/roles.py`: a public client for the SDK's sign-in routes (`/v1/auth/oidc/*`), the
+  groups `<APP_PREFIX>-<tenant>-<role>` for the orgs `acme` and `beta`, and three test persons:
+  `admin@acme.local`, `user@acme.local` and `admin@beta.local`.
+- Each person's sign-in secret is generated on THIS machine at the first run and kept in
+  `.dev/keycloak-users.txt` (mode 0600). `.dev/` is gitignored. The realm file holds no secret:
+  `scripts/local_keycloak.py seed` sets them through the Keycloak admin API. Re-runs keep them;
+  delete the file to make new ones.
+- `./dev.sh login <person>` prints the person's org, role, group and sign-in link, and where the
+  secrets file is. Nothing prints the secret itself.
+- `dev.sh` writes the backend `.env` for the SDK `oidc` login brick (`AJNA_LOGIN_ADAPTER=oidc`,
+  `AUTH_MODE=oidc`, `AJNA_LOGIN_OIDC_ISSUER`, `AJNA_LOGIN_OIDC_AUDIENCE`, the local CA bundle),
+  and the backend container installs the brick from the same `ajna-cloud-bricks` clone. The
+  tokens are real OIDC tokens on the same SDK path as dev and prod: there is no bypass.
+- The issuer is `https://keycloak.localtest.me:18643/realms/<APP_PREFIX>` (`localtest.me`
+  resolves to 127.0.0.1). No committed file outside `dev.sh`, `scripts/local_realm.py` and the docs
+  may name a local issuer (`tests/test_no_local_issuer.py`).
+- **Not yet:** the browser sign-in through the backend (`/v1/auth/oidc/start`) waits on an SDK
+  change: the SDK sign-in routes accept only the cockpit issuer and an `https://` door. Until then
+  the kit proves the token path (Keycloak form → token → `GET /v1/auth/me`), and a browser session
+  uses mode 2.
+
+**Mode 2: end to end against dev** (`AJNA_LOCAL_SIGNIN=dev ./dev.sh start`). The local UI and
+backend sign in through the real dev platform sign-in, with the dev Cognito pool values in
+`.env.example`. Use it for MFA, the invite first sign-in and forgot-secret flows: they need real
+Cognito. It needs a dev test org whose admin adds you through the Members page. There is no
+shared dev login.
 
 The app serves no password route: the SDK switch (`src/handlers/auth.py`) and
 `src/handlers/password_door.py` make each one answer 410 `PASSWORD_SIGN_IN_CLOSED`, and
@@ -73,6 +107,8 @@ The app serves no password route: the SDK switch (`src/handlers/auth.py`) and
 ./dev.sh restart backend     # rebuild + restart one service
 ./dev.sh stop                # stop everything
 ./dev.sh db-setup            # (re)create tables — idempotent
+./dev.sh login <person>      # local sign-in link of a test person (Keycloak kit)
+./dev.sh keycloak            # start only the Keycloak kit
 ```
 
 ---

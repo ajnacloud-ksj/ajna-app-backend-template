@@ -9,6 +9,7 @@
 #   ./dev.sh logs    [backend|ui]   — tail logs (all or one)
 #   ./dev.sh status                 — show running containers + ports
 #   ./dev.sh build   [backend|ui]   — rebuild image(s) without starting
+#   ./dev.sh login   <person>       — local sign-in link of a test person (Keycloak kit)
 
 set -euo pipefail
 
@@ -55,6 +56,28 @@ if [ -z "${AJNA_SDK_PATH:-}" ]; then
     AJNA_SDK_PATH="$IBEX_BASE/ajna-cloud-sdk"  # show this path in error message
   fi
 fi
+
+# ── Local sign-in: the bricks Keycloak kit (reused by path, never copied) ─────────────────────
+# ./dev.sh starts the Keycloak kit of ajna-cloud-bricks with a realm made from THIS app's roles
+# (scripts/local_realm.py): a public client for the SDK's BFF sign-in, the groups
+# <APP_PREFIX>-<tenant>-<role>, and the test persons admin@acme.local, user@acme.local and
+# admin@beta.local. Their sign-in secrets are made per machine and kept in .dev/keycloak-users.txt
+# (gitignored, mode 0600). Nothing about them is in the repo.
+#   AJNA_BRICKS_DIR    the ajna-cloud-bricks clone (default: $IBEX_BASE/ajna-cloud-bricks, else
+#                      ~/ajna/platform/ajna-cloud-bricks)
+#   AJNA_LOCAL_SIGNIN  keycloak (default) | dev — dev = mode 2, end to end against the dev
+#                      platform sign-in (the dev Cognito pool values from .env.example)
+if [ -z "${AJNA_BRICKS_DIR:-}" ]; then
+  if [ -d "$IBEX_BASE/ajna-cloud-bricks" ]; then
+    AJNA_BRICKS_DIR="$IBEX_BASE/ajna-cloud-bricks"
+  else
+    AJNA_BRICKS_DIR="$HOME/ajna/platform/ajna-cloud-bricks"
+  fi
+fi
+AJNA_LOCAL_SIGNIN="${AJNA_LOCAL_SIGNIN:-keycloak}"
+KEYCLOAK_KIT_COMPOSE="$AJNA_BRICKS_DIR/examples/testapp/keycloak/compose.yaml"
+KEYCLOAK_HOST="keycloak.localtest.me"   # the local issuer host (scripts/local_realm.py)
+DEV_STATE_DIR="$SCRIPT_DIR/.dev"
 
 # Read the FastAPI host port directly from ibex-db-lambda's compose file (e.g. "9000:8000" → 9000)
 # Falls back to 9000 if the compose file is absent or the pattern isn't found.
@@ -555,6 +578,80 @@ ui_local_url() {
   echo "http://${tenant:-default}.${app}.localhost:${PORT_UI}"
 }
 
+# ── Keycloak kit ──────────────────────────────────────────────────────────────
+kc_enabled() { [ "$AJNA_LOCAL_SIGNIN" = "keycloak" ]; }
+
+# The realm is the APP_PREFIX; the BFF client id is the SDK's (COCKPIT_SSO_AUDIENCE, else APP_NAME).
+kc_app() { _env_val APP_PREFIX "$BACKEND_ENV" | tr -d ' '; }
+kc_client() {
+  local c
+  c=$(_env_val COCKPIT_SSO_AUDIENCE "$BACKEND_ENV" | tr -d ' ')
+  [ -n "$c" ] || c=$(_env_val APP_NAME "$BACKEND_ENV" | tr -d ' ')
+  [ -n "$c" ] || c=$(kc_app)
+  printf '%s' "$c" | tr '[:upper:]' '[:lower:]'
+}
+
+dc_kc() {
+  AJNA_KEYCLOAK_REALM_FILE="$DEV_STATE_DIR/realm.json" \
+  AJNA_KEYCLOAK_CERTS_DIR="$DEV_STATE_DIR/certs" \
+  AJNA_KEYCLOAK_HOSTNAME="https://${KEYCLOAK_HOST}:18643" \
+    docker compose -p "${PROJECT_NAME}-keycloak" --env-file "$DEV_STATE_DIR/keycloak.env" \
+      -f "$KEYCLOAK_KIT_COMPOSE" "$@"
+}
+
+# Start (or keep) the kit with this app's realm, then seed the per-machine sign-in secrets.
+kc_start() {
+  kc_enabled || return 0
+  if [ ! -f "$KEYCLOAK_KIT_COMPOSE" ]; then
+    error "Keycloak kit not found: $KEYCLOAK_KIT_COMPOSE"
+    error "  it needs ajna-cloud-bricks with that file (ajna-cloud-bricks#160) at \$AJNA_BRICKS_DIR,"
+    error "  or set AJNA_LOCAL_SIGNIN=dev for mode 2"
+    return 1
+  fi
+  local app client before after
+  app=$(kc_app); client=$(kc_client)
+  if [ -z "$app" ]; then error "APP_PREFIX is not set in .env: the realm is named after it"; return 1; fi
+  # Keycloak imports a realm only when it is new, and reads its cert at start: a changed realm
+  # or cert needs a new container.
+  before=$(cat "$DEV_STATE_DIR/realm.json" "$DEV_STATE_DIR/certs/keycloak.pem" 2>/dev/null | shasum | cut -c1-12 || true)
+  python3 "$SCRIPT_DIR/scripts/local_realm.py" realm --app "$app" --client "$client" \
+    --ui-port "${PORT_UI:-5173}" --tenant "$(_env_val TENANT_ID "$BACKEND_ENV" | tr -d ' ')"
+  python3 "$SCRIPT_DIR/scripts/local_keycloak.py" certs >/dev/null
+  after=$(cat "$DEV_STATE_DIR/realm.json" "$DEV_STATE_DIR/certs/keycloak.pem" | shasum | cut -c1-12)
+  local recreate=""
+  [ "$before" != "$after" ] && recreate="--force-recreate"
+  info "Starting the Keycloak kit (realm $app, client $client) ..."
+  dc_kc up -d $recreate keycloak
+  python3 "$SCRIPT_DIR/scripts/local_keycloak.py" wait --app "$app"
+  python3 "$SCRIPT_DIR/scripts/local_keycloak.py" seed --app "$app"
+}
+
+kc_stop() {
+  [ -f "$KEYCLOAK_KIT_COMPOSE" ] && [ -f "$DEV_STATE_DIR/keycloak.env" ] || return 0
+  info "Stopping the Keycloak kit ..."
+  dc_kc down --remove-orphans >/dev/null 2>&1 || true
+}
+
+# The backend .env for the SDK oidc login brick (keycloak), or back to the dev pool (dev).
+kc_inject_env() {
+  if kc_enabled; then
+    local app; app=$(kc_app)
+    _set_env_kv AJNA_LOGIN_ADAPTER oidc
+    _set_env_kv AUTH_MODE oidc          # the older alias: the two must agree, or the SDK stops
+    _set_env_kv AJNA_LOGIN_OIDC_ISSUER "https://${KEYCLOAK_HOST}:18643/realms/${app}"
+    _set_env_kv AJNA_LOGIN_OIDC_AUDIENCE "$(kc_client)"
+    _set_env_kv REQUESTS_CA_BUNDLE /certs/ca-bundle.pem
+    _set_env_kv SSL_CERT_FILE /certs/ca-bundle.pem
+    info "Sign-in → the local Keycloak kit (issuer https://${KEYCLOAK_HOST}:18643/realms/${app})"
+  else
+    local k
+    for k in AJNA_LOGIN_ADAPTER AJNA_LOGIN_OIDC_ISSUER AJNA_LOGIN_OIDC_AUDIENCE \
+             REQUESTS_CA_BUNDLE SSL_CERT_FILE; do _unset_env_kv "$k"; done
+    _set_env_kv AUTH_MODE "$(_env_val AUTH_MODE "$BACKEND_ENV_EXAMPLE")"
+    info "Sign-in → mode 2, the dev platform sign-in (AJNA_LOCAL_SIGNIN=dev)"
+  fi
+}
+
 # Run docker compose with dynamic port + SDK env vars
 # Project name is pinned so it's stable regardless of which directory dev.sh is invoked from.
 dc() {
@@ -563,7 +660,11 @@ dc() {
   # fall back to the in-repo ./local-plugins if the plugins repo isn't cloned.
   local lp="$PLUGINS_DIR"
   [ -d "$lp" ] && lp="$(cd "$lp" && pwd)" || lp="./local-plugins"
+  local kc_host="keycloak.invalid" bricks="./.dev/no-bricks"
+  if kc_enabled; then kc_host="$KEYCLOAK_HOST"; bricks="$AJNA_BRICKS_DIR"; fi
   AJNA_SDK_PATH="$AJNA_SDK_PATH" \
+  AJNA_KEYCLOAK_HOST="$kc_host" \
+  AJNA_BRICKS_DIR="$bricks" \
   LOCAL_PLUGINS_DIR="$lp" \
   UI_DIR="$UI_DIR" \
   PORT_BACKEND=$PORT_BACKEND \
@@ -728,6 +829,12 @@ cmd_start() {
 
   ui_sync_api_url   # point the UI at the actual backend port (no manual .env edits)
 
+  # Local sign-in: the Keycloak kit and the backend's oidc settings (AJNA_LOCAL_SIGNIN).
+  if [ -z "$svc" ] || [ "$svc" = "backend" ]; then
+    kc_start
+    kc_inject_env
+  fi
+
   preflight_free_ports   # clear leftover/stale containers holding our ports (self-heal)
 
   info "Starting ${svc:-all services} ..."
@@ -756,8 +863,12 @@ cmd_start() {
   echo -e "${CYAN}── Sign-in ──${NC}"
   echo "  UI       →  $(ui_local_url)"
   echo "  (open the tenant subdomain above — NOT plain localhost — so the app resolves your tenant)"
-  echo "  Sign-in  →  at the platform portal; the app never sees a password."
-  echo "             Local sign-in moves to the Keycloak kit (next template PR)."
+  if kc_enabled; then
+    echo "  Sign-in  →  the local Keycloak kit; test persons: ./dev.sh login admin@acme.local"
+    echo "             (also user@acme.local, admin@beta.local; secrets in .dev/keycloak-users.txt)"
+  else
+    echo "  Sign-in  →  mode 2: the dev platform sign-in (needs a dev test org)"
+  fi
   echo ""
 
   # No auto db-setup: the SDK is token only, and the local stack cannot issue the deploy actor's
@@ -769,6 +880,7 @@ cmd_start() {
   fi
 
   info "Commands:"
+  echo "  Sign in as:  ./dev.sh login <person>"
   echo "  Tail logs:   ./dev.sh logs [backend|ui]"
   echo "  Stop all:    ./dev.sh stop"
   echo "  Rebuild:     ./dev.sh restart backend"
@@ -785,6 +897,7 @@ cmd_stop() {
     info "Stopping all services ..."
     dc down
     rm -f "$PORTS_FILE"
+    kc_stop
     ibex_stop
     ibex_restore_env
   fi
@@ -864,7 +977,7 @@ cmd_db_setup() {
   info "Running database setup at $url ..."
   # No sign-in here: the app has no password door (people sign in at the platform portal), so
   # this script cannot get a session for you. The setup call goes without one.
-  warn "local sign-in moves to the Keycloak kit (next template PR); until then use a dev session from the deployed dev app"
+  warn "local sign-in is the Keycloak kit (./dev.sh login <person>); this call sends no session"
   warn "Calling setup without a session (it fails where auth is enforced)."
   # The setup answer decides the marker: only an HTTP 200 marks setup done. A failed call (or no
   # answer: "000") leaves no marker and fails the command, so the next run tries again.
@@ -881,6 +994,29 @@ cmd_db_setup() {
   fi
   touch "$SETUP_MARKER"   # mark setup done so it isn't re-run on every restart
   info "db-setup done."
+}
+
+# Print the sign-in link of one local test person, and where the secrets file is.
+cmd_login() {
+  local person="${1:-}"
+  if [ -z "$person" ]; then
+    error "Usage: ./dev.sh login <person>   (admin@acme.local | user@acme.local | admin@beta.local)"
+    return 1
+  fi
+  kc_enabled || { error "AJNA_LOCAL_SIGNIN=dev: sign in at the dev platform sign-in instead"; return 1; }
+  load_ports
+  python3 "$SCRIPT_DIR/scripts/local_keycloak.py" login --app "$(kc_app)" \
+    --ui-origin "http://localhost:${PORT_UI:-5173}" "$person"
+}
+
+# Start only the Keycloak kit and point the backend .env at it.
+cmd_keycloak() {
+  check_docker
+  check_env
+  resolve_ports
+  load_ports
+  kc_start
+  kc_inject_env
 }
 
 # Wipe local IbexDB data (MinIO warehouse + Iceberg catalog) and rebuild a fresh DB.
@@ -915,6 +1051,8 @@ case "$CMD" in
   status)   cmd_status ;;
   build)    cmd_build    "${1:-}" ;;
   db-setup) cmd_db_setup ;;
+  login)    cmd_login    "${1:-}" ;;
+  keycloak) cmd_keycloak ;;
   reset-db) cmd_reset_db ;;
   help|*)
     echo ""
@@ -931,6 +1069,8 @@ case "$CMD" in
     echo "  status             Show running containers and URLs"
     echo "  build  [svc]       Rebuild image(s) without starting"
     echo "  db-setup           Run database setup (idempotent — safe to re-run)"
+    echo "  login <person>     Print the local sign-in link of a test person (Keycloak kit)"
+    echo "  keycloak           Start only the local Keycloak kit (start does it too)"
     echo "  reset-db           Wipe local IbexDB data (volumes) + rebuild fresh — local only"
     echo ""
     echo "IbexDB backend selection (start/restart/update):"
@@ -947,6 +1087,8 @@ case "$CMD" in
     echo "Environment variables:"
     echo "  IBEX_MODE          auto (default) | local | remote — same as the flags above"
     echo "  AJNA_SDK_PATH      Path to ajna-cloud-sdk clone (default: <root>/ibex/ajna-cloud-sdk)"
+    echo "  AJNA_BRICKS_DIR    ajna-cloud-bricks clone (the Keycloak kit; default: \$IBEX_BASE/ajna-cloud-bricks)"
+    echo "  AJNA_LOCAL_SIGNIN  keycloak (default) | dev — mode 2, end to end against the dev sign-in"
     echo "  IBEX_LAMBDA_PATH   Override path to ibex-db-lambda clone"
     echo "                     When used locally, dev.sh boots MinIO + Iceberg + FastAPI and"
     echo "                     points IBEX_API_URL at the local stack (zero latency)."

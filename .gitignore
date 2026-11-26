@@ -76,6 +76,8 @@ secrets.json
 
 # Local dev harness state
 .dev_ports
+# Local sign-in (dev.sh): realm, per-machine Keycloak secrets, local CA. Never commit.
+/.dev/
 
 # Playwright MCP artifacts
 .playwright-mcp/

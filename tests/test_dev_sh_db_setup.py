@@ -99,4 +99,4 @@ def test_db_setup_makes_only_the_setup_call_and_says_where_sign_in_went(tmp_path
     calls = (tmp_path / "curl.log").read_text(encoding="utf-8").splitlines()
     assert len(calls) == 1 and "/v1/admin/database/setup" in calls[0], calls
     assert "Authorization" not in calls[0]
-    assert "local sign-in moves to the Keycloak kit (next template PR)" in out.stdout
+    assert "local sign-in is the Keycloak kit (./dev.sh login <person>)" in out.stdout
