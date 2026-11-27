@@ -79,3 +79,17 @@ def test_the_users_password_routes_answer_only_410():
             resp = router.route_table[key](dict(event), {})
         assert resp["statusCode"] == 410, (key, resp["statusCode"])
         assert json.loads(resp["body"])["code"] == "PASSWORD_SIGN_IN_CLOSED", key
+
+
+
+def test_the_users_password_routes_answer_401_to_nobody():
+    """Without a signed-in caller the SDK refuses first with 401 (before its 410), and never
+    reaches a provider. Both answers refuse; this pins the unauthenticated one."""
+    from unittest.mock import patch
+
+    event = {"httpMethod": "POST", "headers": {}, "pathParameters": {"username": "a@example.com"},
+             "body": json.dumps({"permanent": True})}
+    for key in (('POST', '/v1/users/{username}/reset-password'), ('GET', '/v1/users/password-policy')):
+        with patch("boto3.client", side_effect=AssertionError("a provider was called")):
+            resp = router.route_table[key](dict(event), {})
+        assert resp["statusCode"] == 401, (key, resp["statusCode"])
