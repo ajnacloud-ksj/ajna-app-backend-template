@@ -10,9 +10,10 @@ cookie session). The app never sees a password.
 
 ``routes`` is the SDK's canonical auth route map (``AuthHandlers.auth_routes()``): the org-door
 sign-in, logout, me, permissions and config, plus the SDK's six password sign-in keys. The
-explicit SDK switch below (SDK >= 4.7.0) makes those six answer 410 ``PASSWORD_SIGN_IN_CLOSED``.
-src/app.py spreads the map into the router, and ``src/handlers/password_door.py`` closes every
-password route of the whole table again (also the ones the SDK leaves open, ajna-cloud-sdk#647).
+explicit SDK switch below makes those six answer 410 ``PASSWORD_SIGN_IN_CLOSED``. Since SDK 4.9.0
+it is ONE switch: it also closes ``/v1/me/change-password`` and the users reset-password and
+password-policy routes (ajna-cloud-sdk#647, #661), and ``/v1/auth/config`` reports
+``password_login: false``. src/app.py spreads the map into the router.
 
 Never hand-list /v1/auth routes. The edge (the SDK's DEFAULT_PUBLIC_ROUTES and every stack's
 publicRouteKeys) advertises logout as public, so a route missing from a hand-written list 404s

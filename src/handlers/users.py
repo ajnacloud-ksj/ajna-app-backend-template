@@ -16,8 +16,8 @@ Served (see the SDK for each body and answer):
 
 No route here sets or resets a sign-in: people sign in at the platform portal. The SDK's
 reset-password and password-policy routes stay in the map, as in the apps (Plant Manager, Green
-Box, Taksha), and answer 410: app.py spreads this map inside close_password_door, and
-`password_sign_in=False` closes them in the SDK too (ajna-cloud-sdk#647).
+Box, Taksha), and answer 410: the SDK switch (`password_sign_in=False`, here and in
+handlers/auth.py) closes them (ajna-cloud-sdk#647).
 """
 import os
 

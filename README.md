@@ -60,9 +60,9 @@ API docs →  http://localhost:8000/docs
 People sign in at the platform portal; the app never sees a password. Local dev: the Keycloak
 kit (coming in the next template PR). Until then, use a dev session from the deployed dev app.
 
-The app serves no password route: the SDK switch (`src/handlers/auth.py`) and
-`src/handlers/password_door.py` make each one answer 410 `PASSWORD_SIGN_IN_CLOSED`, and
-`tests/test_password_door_closed.py` fails if one comes back.
+The app serves no password route: the SDK switch (`password_sign_in=False` in
+`src/handlers/auth.py`, one switch since SDK 4.9.0) makes each one answer 410
+`PASSWORD_SIGN_IN_CLOSED`, and `tests/test_password_door_closed.py` fails if one comes back.
 
 ### Commands
 
@@ -156,7 +156,6 @@ src/
 ├── handlers/
 │   ├── health.py           # /health, /ready, /status
 │   ├── auth.py             # me / permissions / logout (password door closed)
-│   ├── password_door.py    # closes every password route (410)
 │   ├── admin.py            # tenant read/update + RBAC management, DEFAULT_ROLES
 │   ├── housekeeping.py     # EXAMPLE @scheduled job (webhook inbox retention)
 │   ├── users.py            # tenant-scoped user management + sync

@@ -11,7 +11,8 @@ import json
 import pytest
 
 from src.app import router
-from src.handlers import auth, password_door
+from src.handlers import auth
+from tests.conftest import as_role
 
 
 def _auth_route_keys(table):
@@ -27,12 +28,10 @@ def test_every_sdk_auth_route_is_served():
 
 
 def test_auth_routes_map_to_the_sdk_handlers():
-    # The password keys answer 410 and /v1/auth/config is wrapped (src/handlers/password_door.py,
-    # checked in tests/test_password_door_closed.py); every other auth key is the SDK's handler.
+    # Every auth key, the closed password keys included, is the SDK map's own entry: the SDK
+    # switch closes them (tests/test_password_door_closed.py checks the 410s).
     table = router.route_table
     for key, handler in auth.routes.items():
-        if password_door.is_closed_route(key) or key == ('GET', '/v1/auth/config'):
-            continue
         assert table[key] == handler, f"{key} is not wired to the SDK handler"
 
 
@@ -71,7 +70,26 @@ def test_post_logout_dispatches_instead_of_404():
 
 def test_the_users_password_routes_answer_only_410():
     """Sign-in is the platform's: no users route resets a sign-in or reads its rule (#647). The
-    SDK map keeps the two routes; the password door closes both (as in the apps)."""
+    SDK map keeps the two routes; the SDK switch closes both (as in the apps)."""
+    event = {"httpMethod": "POST", "headers": {}, "pathParameters": {"username": "a@example.com"},
+             "body": json.dumps({"permanent": True})}
     for key in (('POST', '/v1/users/{username}/reset-password'), ('GET', '/v1/users/password-policy')):
         assert key in router.route_table, key
-        assert getattr(router.route_table[key], "__name__", "") == "password_sign_in_closed", key
+        with as_role("admin", tenant_id="acme"):
+            resp = router.route_table[key](dict(event), {})
+        assert resp["statusCode"] == 410, (key, resp["statusCode"])
+        assert json.loads(resp["body"])["code"] == "PASSWORD_SIGN_IN_CLOSED", key
+
+
+
+def test_the_users_password_routes_answer_401_to_nobody():
+    """Without a signed-in caller the SDK refuses first with 401 (before its 410), and never
+    reaches a provider. Both answers refuse; this pins the unauthenticated one."""
+    from unittest.mock import patch
+
+    event = {"httpMethod": "POST", "headers": {}, "pathParameters": {"username": "a@example.com"},
+             "body": json.dumps({"permanent": True})}
+    for key in (('POST', '/v1/users/{username}/reset-password'), ('GET', '/v1/users/password-policy')):
+        with patch("boto3.client", side_effect=AssertionError("a provider was called")):
+            resp = router.route_table[key](dict(event), {})
+        assert resp["statusCode"] == 401, (key, resp["statusCode"])
