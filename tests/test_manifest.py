@@ -21,7 +21,7 @@ SCHEMAS = REPO_ROOT / "src" / "schemas"
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 # The top-level keys of the manifest. "jobs" (ajna-cloud >= 4.3.0) declares every self job the app
 # registers, and "default_role" (#1554) is the role a new member gets; the base image's SDK
-# (py312-4.7.1) accepts both.
+# (py312-4.9.0) accepts both.
 _TOP_KEYS = {"app", "version", "service_users", "public", "platform_ops", "jobs", "default_role"}
 
 
@@ -92,7 +92,11 @@ def test_no_other_users_and_no_public_user(manifest):
 def test_every_declared_table_is_a_table_db_setup_creates(manifest):
     from src.config.tables import ESSENTIAL_TABLES
 
-    essential = {f"app_{t}" for t in ESSENTIAL_TABLES}
+    from ajna_cloud.seed_marker import SEED_RUNS_TABLE
+
+    # The SDK (>= 4.8.0) adds its own seed-once marker table to the seed user, and its db-setup
+    # creates it (handlers/admin.py); every other declared table is one of the app's.
+    essential = {f"app_{t}" for t in ESSENTIAL_TABLES} | {SEED_RUNS_TABLE}
     tables = {t for u in manifest.service_users for t in u.tables}
     assert tables <= essential, sorted(tables - essential)
 
@@ -108,8 +112,11 @@ def test_grants_stay_minimal(manifest):
     # The housekeeping job: reads and prunes the webhook inbox only.
     assert jobs.tables == (INBOX_TABLE,) and jobs.hard_delete == (INBOX_TABLE,)
     assert jobs.ops == ("QUERY",)
-    # The seed: reads and upserts the tenant config row only; never deletes.
-    assert seed.tables == (TENANT_CONFIG_TABLE,)
+    # The seed: reads and upserts the tenant config row only, plus the SDK's own seed-once
+    # marker (>= 4.8.0, added by the SDK loader, not by ajna.manifest.json); never deletes.
+    from ajna_cloud.seed_marker import SEED_RUNS_TABLE
+
+    assert seed.tables == (TENANT_CONFIG_TABLE, SEED_RUNS_TABLE)
     assert set(seed.ops) == {"QUERY", "UPSERT"} and seed.hard_delete == ()
     # The event user: append-only on the inbox.
     assert event.tables == (INBOX_TABLE,) and event.ops == ("WRITE",)

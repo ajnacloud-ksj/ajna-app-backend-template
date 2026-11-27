@@ -60,7 +60,8 @@ KEPT_ROUTES = frozenset({
     ("GET", "/v1/auth/oidc/callback"),
 })
 
-#: User management that stays until the platform Members block replaces it; the UI uses it.
+#: User management: the SDK's user_routes() (ajna-cloud >= 4.9.0), minus its password routes.
+#: lock/unlock are the SDK's deprecated aliases of suspend/restore; the UI still calls them.
 KEPT_USER_ROUTES = frozenset({
     ("GET", "/v1/users"),
     ("POST", "/v1/users/invite"),
@@ -68,6 +69,11 @@ KEPT_USER_ROUTES = frozenset({
     ("POST", "/v1/users/{username}/lock"),
     ("POST", "/v1/users/{username}/unlock"),
     ("DELETE", "/v1/users/{username}"),
+    ("POST", "/v1/users/{username}/suspend"),
+    ("POST", "/v1/users/{username}/restore"),
+    ("POST", "/v1/users/{username}/cancel-invite"),
+    ("POST", "/v1/users/{username}/resend-invitation"),
+    ("GET", "/v1/users/me/capabilities"),
     ("POST", "/v1/admin/users/sync"),
     ("POST", "/v1/admin/rbac/roles"),
     ("GET", "/v1/admin/rbac/roles"),
@@ -121,6 +127,28 @@ def test_no_other_route_is_closed():
     closed = {r for r, h in ROUTES.items() if not _is_password_route(r)
               and getattr(h, "__name__", "") == "password_sign_in_closed"}
     assert closed == set()
+
+
+def test_the_user_routes_are_the_sdk_map():
+    # Never hand-listed: a new SDK user route arrives with the base image. Every entry is the
+    # SDK's own handler, except the password routes, which the door closes (410, above).
+    from src.handlers import users
+
+    sdk = users._handlers.user_routes()
+    assert users.PASSWORD_USER_ROUTES <= set(sdk), "the SDK map changed: re-check the password routes"
+    assert set(users.routes) == set(sdk)
+    for route, handler in users.routes.items():
+        if route in users.PASSWORD_USER_ROUTES:
+            assert getattr(ROUTES[route], "__name__", "") == "password_sign_in_closed", route
+        else:
+            assert ROUTES[route] == handler, f"{route} is not the SDK handler"
+
+
+def test_the_sdk_user_handlers_have_the_password_door_closed():
+    # Second layer: if a password user route ever comes back into the map, the SDK answers 410.
+    from src.handlers import users
+
+    assert users._handlers._password_sign_in is False
 
 
 def test_the_users_password_handlers_are_gone():

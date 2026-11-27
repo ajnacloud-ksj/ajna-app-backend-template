@@ -1,24 +1,28 @@
 """
-User Management for {{app-name}} — thin wrapper around ajna_cloud SDK.
+User Management for {{app-name}} — the SDK's canonical user routes.
 
-Delegates to ajna_cloud SDK tenant-scoped user management. After a successful
-invite or remove, the SDK syncs app_users in IbexDB automatically.
+`routes` is the SDK's `user_routes()` map (ajna-cloud >= 4.9.0), spread into app.py, so a new
+SDK route arrives with the next base image instead of being hand-listed here. After a
+successful invite or remove, the SDK syncs app_users in IbexDB automatically.
 
-Routes (wired in app.py):
-    POST   /v1/admin/users/sync
-    GET    /v1/users
-    POST   /v1/users/invite
-    PUT    /v1/users/{username}/role
-    POST   /v1/users/{username}/lock
-    POST   /v1/users/{username}/unlock
-    DELETE /v1/users/{username}
+Served (see the SDK for each body and answer):
+    GET    /v1/users                          POST   /v1/users/invite
+    PUT    /v1/users/{username}/role          DELETE /v1/users/{username}
+    POST   /v1/users/{username}/suspend       POST   /v1/users/{username}/restore
+    POST   /v1/users/{username}/cancel-invite POST   /v1/users/{username}/resend-invitation
+    GET    /v1/users/me/capabilities          POST   /v1/admin/users/sync
+    POST   /v1/users/{username}/lock|unlock   (DEPRECATED SDK aliases of suspend / restore,
+                                               kept while the UI calls them)
 
-No route here sets or resets a sign-in: people sign in at the platform portal, and the
-SDK's reset-password and password-policy handlers are not exported (ajna-cloud-sdk#647).
-These routes move to the platform Members block later; the UI still uses them.
+No route here sets or resets a sign-in: people sign in at the platform portal. The SDK's
+reset-password and password-policy routes stay in the map, as in the apps (Plant Manager, Green
+Box, Taksha), and answer 410: app.py spreads this map inside close_password_door, and
+`password_sign_in=False` closes them in the SDK too (ajna-cloud-sdk#647).
 """
 import os
+
 from ajna_cloud import make_user_management_handlers
+
 from src.config.roles import ALL_ROLES
 
 _handlers = make_user_management_handlers(
@@ -28,12 +32,14 @@ _handlers = make_user_management_handlers(
     # Invites are email invitations only, whatever AJNA_ADMIN_SET_PASSWORD says: an admin never
     # chooses, sees or makes permanent a member's sign-in secret.
     allow_admin_set_password=False,
+    # The password door is closed (handlers/auth.py): the SDK's password user routes answer 410.
+    password_sign_in=False,
 )
 
-list_users = _handlers.list_users
-invite_user = _handlers.invite_user
-update_user_role = _handlers.update_user_role
-lock_user = _handlers.lock_user
-unlock_user = _handlers.unlock_user
-remove_user = _handlers.remove_user
-sync_users = _handlers.sync_users
+#: The SDK routes that set or read a sign-in secret: served only as 410 (#647).
+PASSWORD_USER_ROUTES = frozenset({
+    ("POST", "/v1/users/{username}/reset-password"),
+    ("GET", "/v1/users/password-policy"),
+})
+
+routes = _handlers.user_routes()

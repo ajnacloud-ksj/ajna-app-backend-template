@@ -85,9 +85,6 @@ router = Router(close_password_door({
     # missing here 404s, and logout then leaves the token valid. See handlers/auth.py.
     **auth.routes,
 
-    # ── User Sync ──────────────────────────────────────────────────────────────
-    ('POST', '/v1/admin/users/sync'):  users.sync_users,
-
     # ── Database Admin ─────────────────────────────────────────────────────────
     ('POST',   '/v1/admin/database/setup'):        _db_admin.setup_database,
     ('DELETE', '/v1/admin/database/cleanup'):      _db_admin.cleanup_database,
@@ -111,14 +108,10 @@ router = Router(close_password_door({
     ('GET',    '/v1/admin/rbac/roles'):                  admin.list_roles,
     ('POST',   '/v1/admin/rbac/roles/{role_id}/assign'): admin.assign_role,
 
-    # ── User Management (tenant-scoped) ────────────────────────────────────────
-    # No route sets or resets a sign-in here: the platform portal owns sign-in (#647).
-    ('GET',    '/v1/users'):                          users.list_users,
-    ('POST',   '/v1/users/invite'):                   users.invite_user,
-    ('PUT',    '/v1/users/{username}/role'):           users.update_user_role,
-    ('POST',   '/v1/users/{username}/lock'):           users.lock_user,
-    ('POST',   '/v1/users/{username}/unlock'):         users.unlock_user,
-    ('DELETE', '/v1/users/{username}'):               users.remove_user,
+    # ── User Management (tenant-scoped) + user sync ────────────────────────────
+    # The SDK's canonical map (handlers/users.py): never hand-list these. No route sets or
+    # resets a sign-in here: the platform portal owns sign-in (#647).
+    **users.routes,
 
     # ── Field Config (per-tenant custom fields) ────────────────────────────────
     ('GET',    '/v1/field-config/{entity_type}'):              field_config.get_field_config,
