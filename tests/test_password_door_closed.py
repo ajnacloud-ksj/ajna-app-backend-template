@@ -3,13 +3,10 @@
 Owner decision: sign-in is a platform feature. People arrive through the portal hand-off and the
 SDK's org-door sign-in (``/v1/auth/oidc/*``, cookie session). An app built from this template
 serves no password sign-in, MFA, new-password, change-password, reset-password or password-policy
-route. Two layers close them:
-
-* the SDK switch, set explicitly in ``src/handlers/auth.py`` (SDK >= 4.7.0): the six password
-  sign-in routes answer 410;
-* ``src/handlers/password_door.py`` around the whole route table: every route whose path names a
-  password, including the users reset-password and password-policy routes that the SDK still
-  leaves open (ajna-cloud-sdk#647).
+route. One switch closes them: the SDK's, set explicitly with ``password_sign_in=False`` in
+``src/handlers/auth.py`` and ``src/handlers/users.py``. Since SDK 4.9.0 it closes the six password
+sign-in routes, ``/v1/me/change-password`` and the users reset-password and password-policy routes
+(ajna-cloud-sdk#647, #661): each answers 410 before any provider call.
 
 The checks walk the REAL route table (``src.app.router``), not a hand list, so a password route
 that a later SDK or a later app change adds fails here until it is closed.
@@ -25,6 +22,7 @@ from unittest.mock import patch
 import pytest
 
 from src import app as app_module
+from tests.conftest import as_role
 
 CLOSED_CODE = "PASSWORD_SIGN_IN_CLOSED"
 REPO = Path(__file__).resolve().parent.parent
@@ -101,7 +99,10 @@ def _password_routes_in_the_table():
 
 
 def _answer(handler):
-    with patch("boto3.client", side_effect=AssertionError("Cognito was called")), \
+    # As a signed-in tenant admin: the SDK users password routes check the caller first (401 for
+    # nobody), then answer 410. The public sign-in keys answer 410 either way. No provider call.
+    with as_role("admin", tenant_id="acme"), \
+         patch("boto3.client", side_effect=AssertionError("Cognito was called")), \
          patch("boto3.session.Session.client", side_effect=AssertionError("Cognito was called")):
         return handler(dict(EVENT), {})
 
@@ -124,24 +125,30 @@ def test_every_password_route_answers_410_before_any_cognito_call(route):
 
 
 def test_no_other_route_is_closed():
-    closed = {r for r, h in ROUTES.items() if not _is_password_route(r)
-              and getattr(h, "__name__", "") == "password_sign_in_closed"}
+    from ajna_cloud import password_sign_in
+
+    closed = {r for r, h in ROUTES.items() if not _is_password_route(r) and h is password_sign_in.closed}
     assert closed == set()
+
+
+def test_the_sdk_switch_is_declared_closed():
+    # One switch (SDK >= 4.9.0): importing the app declared it, so every SDK password handler,
+    # including the profile's change-password and the users routes, answers 410.
+    from ajna_cloud import password_sign_in
+
+    assert password_sign_in.enabled() is False
 
 
 def test_the_user_routes_are_the_sdk_map():
     # Never hand-listed: a new SDK user route arrives with the base image. Every entry is the
-    # SDK's own handler, except the password routes, which the door closes (410, above).
+    # SDK's own handler; the SDK switch makes its password routes answer 410 (above).
     from src.handlers import users
 
     sdk = users._handlers.user_routes()
     assert users.PASSWORD_USER_ROUTES <= set(sdk), "the SDK map changed: re-check the password routes"
     assert set(users.routes) == set(sdk)
     for route, handler in users.routes.items():
-        if route in users.PASSWORD_USER_ROUTES:
-            assert getattr(ROUTES[route], "__name__", "") == "password_sign_in_closed", route
-        else:
-            assert ROUTES[route] == handler, f"{route} is not the SDK handler"
+        assert ROUTES[route] == handler, f"{route} is not the SDK handler"
 
 
 def test_the_sdk_user_handlers_have_the_password_door_closed():
@@ -174,7 +181,9 @@ def test_the_sdk_switch_is_set_in_the_auth_map():
 def test_a_kept_route_is_served_and_not_closed(route):
     assert route in ROUTES, f"{route} is no longer served"
     assert not _is_password_route(route)
-    assert getattr(ROUTES[route], "__name__", "") != "password_sign_in_closed"
+    from ajna_cloud import password_sign_in
+
+    assert ROUTES[route] is not password_sign_in.closed
 
 
 def test_the_org_door_sign_in_stays_the_sdk_handlers():
@@ -203,12 +212,13 @@ def test_auth_config_reports_no_password_login():
     assert "provider" in body and "client_id" in body
 
 
-def test_the_local_list_matches_the_sdk_when_it_has_one():
-    sdk = pytest.importorskip("ajna_cloud.password_sign_in",
-                              reason="SDK < 4.7.0 has no ajna_cloud.password_sign_in")
-    from src.handlers import password_door
+def test_the_local_lists_match_the_sdk():
+    from ajna_cloud import password_sign_in as sdk
 
-    assert password_door.PASSWORD_ROUTES == sdk.PASSWORD_ROUTES == SDK_PASSWORD_ROUTES
+    from src.handlers import users
+
+    assert sdk.PASSWORD_ROUTES == SDK_PASSWORD_ROUTES
+    assert sdk.USER_PASSWORD_ROUTES == users.PASSWORD_USER_ROUTES
     assert KEPT_ROUTES == sdk.KEPT_ROUTES
 
 
@@ -221,10 +231,7 @@ FORBIDDEN = re.compile(
 
 #: The only allowed hits, as {(relative path, matched text): reason}. A reviewer agrees to each.
 #: This guard file is outside the scanned paths (tests/), so it needs no entry.
-ALLOWED_HITS: dict = {
-    # The module that CLOSES the route lists it in PASSWORD_ROUTES; it serves nothing there.
-    ("src/handlers/password_door.py", "/v1/auth/login"): "the closed-route list",
-}
+ALLOWED_HITS: dict = {}
 
 SCANNED_DIRS = ("src", "scripts", "ci", "docs")
 SCANNED_FILES = ("dev.sh", ".env.example", "README.md")
@@ -275,34 +282,7 @@ def test_the_scan_finds_a_planted_password_flow(sample):
     assert list(_hits(sample, "planted.py"))
 
 
-# ── The override itself ──────────────────────────────────────────────────────────────────────
-
-def test_close_password_door_does_not_change_its_input():
-    from src.handlers import password_door
-
-    login, me = object(), object()
-    routes = {("POST", "/v1/auth/login"): login, ("GET", "/v1/auth/me"): me}
-    before = dict(routes)
-    out = password_door.close_password_door(routes)
-    assert routes == before
-    assert out[("POST", "/v1/auth/login")] is password_door.password_sign_in_closed
-    assert out[("GET", "/v1/auth/me")] is me
-
-
-def test_a_new_route_that_names_a_password_is_closed():
-    from src.handlers import password_door
-
-    out = password_door.close_password_door({("PUT", "/v1/admin/users/{u}/set-password"): object()})
-    assert out[("PUT", "/v1/admin/users/{u}/set-password")] is password_door.password_sign_in_closed
-
-
-def test_config_passes_a_non_json_answer_through_unchanged():
-    from src.handlers import password_door
-
-    raw = {"statusCode": 503, "headers": {}, "body": "not json"}
-    wrapped = password_door.close_password_door({("GET", "/v1/auth/config"): lambda e, c: raw})
-    assert wrapped[("GET", "/v1/auth/config")]({}, {}) == raw
-
+# ── Invites ──────────────────────────────────────────────────────────────────────────────────
 
 def test_an_invite_never_takes_an_admin_chosen_secret(monkeypatch):
     # The SDK invite can set a permanent secret when AJNA_ADMIN_SET_PASSWORD is on; the template

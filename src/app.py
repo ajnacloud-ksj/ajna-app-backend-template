@@ -16,7 +16,6 @@ from src.config.tables import (
 )
 from src.handlers import health, items, admin, users, storage, audit, auth, field_config
 from src.handlers import imports, exports
-from src.handlers.password_door import close_password_door
 # Side effect: registers the @scheduled example job (runs as the job service user).
 from src.handlers import housekeeping  # noqa: F401
 from src.seed import seed_defaults
@@ -64,12 +63,12 @@ _tenant_config = make_tenant_config_handlers(
     app_name='{{app-name}}',
 )
 
-# close_password_door() wraps the whole table, because sign-in is a platform feature: every
-# password route in it (the SDK sign-in keys, change-password, the users reset-password and
-# password-policy routes of ajna-cloud-sdk#647, and any path that names a password) answers 410,
-# and /v1/auth/config says the password door is off. Routes added later with router.add/crud are
-# checked by tests/test_password_door_closed.py, which walks the live route table.
-router = Router(close_password_door({
+# Sign-in is a platform feature: the SDK switch (password_sign_in=False in handlers/auth.py and
+# handlers/users.py, SDK >= 4.9.0) closes every SDK password route in this table (sign-in keys,
+# change-password, the users reset-password and password-policy of ajna-cloud-sdk#647): each
+# answers 410, and /v1/auth/config says the password door is off. tests/test_password_door_closed.py
+# walks the live table, so a route added later that names a password fails until it is closed.
+router = Router({
     # ── Health ─────────────────────────────────────────────────────────────────
     ('GET',  '/health'):  health.check,
     ('GET',  '/ready'):   health.ready,
@@ -131,7 +130,7 @@ router = Router(close_password_door({
     # ── Storage ────────────────────────────────────────────────────────────────
     ('POST', '/v1/storage/upload-url'):   storage.get_upload_url,
     ('POST', '/v1/storage/download-url'): storage.get_download_url,
-}))
+})
 
 # ── Schema-aware CRUD (validates required fields + enforces write roles) ───────
 _CRUD_METHODS = ('list', 'create', 'get', 'update', 'delete')
