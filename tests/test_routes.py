@@ -69,7 +69,9 @@ def test_post_logout_dispatches_instead_of_404():
     assert json.loads(resp["body"]).get("ok") is True
 
 
-def test_the_users_password_routes_are_not_served():
-    """Sign-in is the platform's: no users route resets a sign-in or reads its rule (#647)."""
-    assert ('POST', '/v1/users/{username}/reset-password') not in router.route_table
-    assert ('GET', '/v1/users/password-policy') not in router.route_table
+def test_the_users_password_routes_answer_only_410():
+    """Sign-in is the platform's: no users route resets a sign-in or reads its rule (#647). The
+    SDK map keeps the two routes; the password door closes both (as in the apps)."""
+    for key in (('POST', '/v1/users/{username}/reset-password'), ('GET', '/v1/users/password-policy')):
+        assert key in router.route_table, key
+        assert getattr(router.route_table[key], "__name__", "") == "password_sign_in_closed", key
