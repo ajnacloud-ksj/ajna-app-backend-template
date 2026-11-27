@@ -16,6 +16,7 @@ from src.config.tables import (
 )
 from src.handlers import health, items, admin, users, storage, audit, auth, field_config
 from src.handlers import imports, exports
+from src.handlers.password_door import close_password_door
 # Side effect: registers the @scheduled example job (runs as the job service user).
 from src.handlers import housekeeping  # noqa: F401
 from src.seed import seed_defaults
@@ -63,7 +64,12 @@ _tenant_config = make_tenant_config_handlers(
     app_name='{{app-name}}',
 )
 
-router = Router({
+# close_password_door() wraps the whole table, because sign-in is a platform feature: every
+# password route in it (the SDK sign-in keys, change-password, the users reset-password and
+# password-policy routes of ajna-cloud-sdk#647, and any path that names a password) answers 410,
+# and /v1/auth/config says the password door is off. Routes added later with router.add/crud are
+# checked by tests/test_password_door_closed.py, which walks the live route table.
+router = Router(close_password_door({
     # ── Health ─────────────────────────────────────────────────────────────────
     ('GET',  '/health'):  health.check,
     ('GET',  '/ready'):   health.ready,
@@ -73,13 +79,11 @@ router = Router({
     ('GET',  '/v1/public/tenant/{slug}/config'):  _tenant_config.get_config,
 
     # ── Auth ───────────────────────────────────────────────────────────────────
-    # The SDK's canonical map (login, refresh, logout, mfa, me, permissions, ...).
+    # The SDK's canonical map: the org-door sign-in (oidc/*), logout, me, permissions and
+    # config; its password keys answer 410 (SDK switch in handlers/auth.py).
     # Never hand-list /v1/auth routes: a route advertised public at the edge but
     # missing here 404s, and logout then leaves the token valid. See handlers/auth.py.
     **auth.routes,
-
-    # ── User Sync ──────────────────────────────────────────────────────────────
-    ('POST', '/v1/admin/users/sync'):  users.sync_users,
 
     # ── Database Admin ─────────────────────────────────────────────────────────
     ('POST',   '/v1/admin/database/setup'):        _db_admin.setup_database,
@@ -104,14 +108,10 @@ router = Router({
     ('GET',    '/v1/admin/rbac/roles'):                  admin.list_roles,
     ('POST',   '/v1/admin/rbac/roles/{role_id}/assign'): admin.assign_role,
 
-    # ── User Management (tenant-scoped) ────────────────────────────────────────
-    ('GET',    '/v1/users'):                          users.list_users,
-    ('POST',   '/v1/users/invite'):                   users.invite_user,
-    ('PUT',    '/v1/users/{username}/role'):           users.update_user_role,
-    ('POST',   '/v1/users/{username}/lock'):           users.lock_user,
-    ('POST',   '/v1/users/{username}/unlock'):         users.unlock_user,
-    ('POST',   '/v1/users/{username}/reset-password'): users.reset_password,
-    ('DELETE', '/v1/users/{username}'):               users.remove_user,
+    # ── User Management (tenant-scoped) + user sync ────────────────────────────
+    # The SDK's canonical map (handlers/users.py): never hand-list these. No route sets or
+    # resets a sign-in here: the platform portal owns sign-in (#647).
+    **users.routes,
 
     # ── Field Config (per-tenant custom fields) ────────────────────────────────
     ('GET',    '/v1/field-config/{entity_type}'):              field_config.get_field_config,
@@ -131,11 +131,7 @@ router = Router({
     # ── Storage ────────────────────────────────────────────────────────────────
     ('POST', '/v1/storage/upload-url'):   storage.get_upload_url,
     ('POST', '/v1/storage/download-url'): storage.get_download_url,
-})
-
-# Invite/reset forms read the pool's password rule from here (SDK >= email-invites release).
-if users.password_policy is not None:
-    router.add('GET', '/v1/users/password-policy', users.password_policy)
+}))
 
 # ── Schema-aware CRUD (validates required fields + enforces write roles) ───────
 _CRUD_METHODS = ('list', 'create', 'get', 'update', 'delete')

@@ -753,10 +753,11 @@ cmd_start() {
     echo "  MinIO    →  http://localhost:9005  (console: http://localhost:9006)"
   fi
   echo ""
-  echo -e "${CYAN}── Dev login ──${NC}"
+  echo -e "${CYAN}── Sign-in ──${NC}"
   echo "  UI       →  $(ui_local_url)"
   echo "  (open the tenant subdomain above — NOT plain localhost — so the app resolves your tenant)"
-  echo "  Login    →  your own dev Cognito user (team password manager)"
+  echo "  Sign-in  →  at the platform portal; the app never sees a password."
+  echo "             Local sign-in moves to the Keycloak kit (next template PR)."
   echo ""
 
   # No auto db-setup: the SDK is token only, and the local stack cannot issue the deploy actor's
@@ -847,7 +848,6 @@ cmd_build() {
 cmd_db_setup() {
   load_ports
   local url="http://localhost:$PORT_BACKEND/v1/admin/database/setup"
-  local login_url="http://localhost:$PORT_BACKEND/v1/auth/login"
   local tenant
   tenant=$(_env_val TENANT_ID "$BACKEND_ENV" | tr -d ' ')
   local -a tenant_header=()
@@ -862,34 +862,16 @@ cmd_db_setup() {
     return 1
   fi
   info "Running database setup at $url ..."
-  # Authenticate with your own dev user (DEV_LOGIN_EMAIL / DEV_LOGIN_PASSWORD in .env
-  # or the environment) to get a Bearer token. No login is ever stored in this repo.
-  local token="" dev_email dev_password
-  dev_email=${DEV_LOGIN_EMAIL:-$(_env_val DEV_LOGIN_EMAIL "$BACKEND_ENV")}
-  dev_password=${DEV_LOGIN_PASSWORD:-$(_env_val DEV_LOGIN_PASSWORD "$BACKEND_ENV")}
-  if [ -z "$dev_email" ] || [ -z "$dev_password" ]; then
-    warn "DEV_LOGIN_EMAIL / DEV_LOGIN_PASSWORD not set in .env — skipping login."
-  else
-    # `|| token=""`: a refused login or an unreachable backend must not end the script silently
-    # (set -euo pipefail); the empty token is reported just below.
-    token=$(DEV_LOGIN_EMAIL="$dev_email" DEV_LOGIN_PASSWORD="$dev_password" python3 -c \
-        "import os,json; print(json.dumps({'username': os.environ['DEV_LOGIN_EMAIL'], 'password': os.environ['DEV_LOGIN_PASSWORD']}))" \
-      | curl -s -X POST "$login_url" -H "Content-Type: application/json" --data @- \
-      | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null) \
-      || token=""
-  fi
-  local -a auth_header=()
-  if [ -n "$token" ]; then
-    auth_header=(-H "Authorization: Bearer $token")
-  else
-    warn "Could not obtain auth token — calling setup without auth (will fail if auth is enforced)."
-  fi
+  # No sign-in here: the app has no password door (people sign in at the platform portal), so
+  # this script cannot get a session for you. The setup call goes without one.
+  warn "local sign-in moves to the Keycloak kit (next template PR); until then use a dev session from the deployed dev app"
+  warn "Calling setup without a session (it fails where auth is enforced)."
   # The setup answer decides the marker: only an HTTP 200 marks setup done. A failed call (or no
   # answer: "000") leaves no marker and fails the command, so the next run tries again.
   local body status
   body=$(mktemp)
   status=$(curl -s -o "$body" -w '%{http_code}' -X POST "$url" \
-             ${auth_header[@]+"${auth_header[@]}"} ${tenant_header[@]+"${tenant_header[@]}"}) \
+             ${tenant_header[@]+"${tenant_header[@]}"}) \
     || status="${status:-000}"
   if command -v python3 &>/dev/null && python3 -m json.tool "$body" 2>/dev/null; then :; else cat "$body"; echo; fi
   rm -f "$body"
